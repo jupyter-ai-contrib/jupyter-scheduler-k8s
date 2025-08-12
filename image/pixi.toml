@@ -1,0 +1,12 @@
+[workspace]
+authors = ["Brian E. Granger <ellisonbg@gmail.com>"]
+channels = ["conda-forge"]
+name = "image"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+# Main application startup command
+start = "Put your command to run a notebook as a job here"
+
+[dependencies]
