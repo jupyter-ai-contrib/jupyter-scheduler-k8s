@@ -25,6 +25,16 @@ Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jup
      jupyter-scheduler-k8s:latest
    ```
 
+3. **Test with copying input folder** (using `PACKAGE_INPUT_FOLDER` environment variable):
+   ```bash
+   finch run --rm \
+     -e NOTEBOOK_PATH="/workspace/tests/test_with_data.ipynb" \
+     -e OUTPUT_PATH="/workspace/output.ipynb" \
+     -e PACKAGE_INPUT_FOLDER="true" \
+     -v "$(pwd):/workspace" \
+     jupyter-scheduler-k8s:latest
+   ```
+
 ## Container Environment Variables
 
 | Variable | Required | Default | Description |
@@ -32,6 +42,7 @@ Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jup
 | `NOTEBOOK_PATH` | Yes | - | Path to notebook file |
 | `OUTPUT_PATH` | Yes | - | Path to save executed notebook |
 | `PARAMETERS` | No | `{}` | JSON parameters to inject |
+| `PACKAGE_INPUT_FOLDER` | No | `false` | Include all files from notebook directory |
 
 ## Development Setup
 

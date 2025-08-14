@@ -39,7 +39,7 @@ make build-image
 Builds `jupyter-scheduler-k8s:latest` using:
 - Base: `ghcr.io/prefix-dev/pixi:0.50.2-bookworm-slim`
 - Pixi environment management
-- Simple "Hello World" Python application
+- Notebook executor supporting parameter injection and file packaging
 
 ### Kubernetes Development
 
@@ -72,6 +72,7 @@ The project uses:
 - `image/main.py` handles notebook execution via nbconvert (same as jupyter-scheduler)
 - Code follows high quality standards: no over-engineering, meaningful logging only, graceful error handling
 - Parameter injection matches jupyter-scheduler's approach exactly
+- `PACKAGE_INPUT_FOLDER` env var enables copying all files from notebook directory (matching jupyter-scheduler's `package_input_folder` feature)
 
 ## Development Status
 
