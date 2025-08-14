@@ -2,11 +2,14 @@
 authors = ["Brian E. Granger <ellisonbg@gmail.com>"]
 channels = ["conda-forge"]
 name = "image"
-platforms = ["osx-arm64"]
+platforms = ["osx-arm64", "linux-aarch64", "linux-64"]
 version = "0.1.0"
 
 [tasks]
-# Main application startup command
-start = "Put your command to run a notebook as a job here"
+start = "python main.py"
 
 [dependencies]
+jupyter = "*"
+nbformat = "*"
+nbconvert = "*"
+ipykernel = "*"

@@ -39,7 +39,7 @@ make build-image
 Builds `jupyter-scheduler-k8s:latest` using:
 - Base: `ghcr.io/prefix-dev/pixi:0.50.2-bookworm-slim`
 - Pixi environment management
-- Simple "Hello World" Python application
+- Notebook executor supporting parameter injection and file packaging
 
 ### Kubernetes Development
 
@@ -66,16 +66,24 @@ The project uses:
 - `kubernetes>=33.1.0` - Kubernetes API client
 - `uv` for build system
 
-## Image Configuration
+## Implementation Notes
 
-The Docker image uses Pixi for environment management:
-- Platforms: `osx-arm64` (configured in `image/pixi.toml`)
-- Start command: Currently placeholder "Put your command to run a notebook as a job here"
+- Container built with Pixi for cross-platform support
+- `image/main.py` handles notebook execution via nbconvert (same as jupyter-scheduler)
+- Code follows high quality standards: no over-engineering, meaningful logging only, graceful error handling
+- Parameter injection matches jupyter-scheduler's approach exactly
+- `PACKAGE_INPUT_FOLDER` env var enables copying all files from notebook directory (matching jupyter-scheduler's `package_input_folder` feature)
 
 ## Development Status
 
-This appears to be an early-stage project with:
-- Basic project structure established
-- Development environment setup complete
-- Core implementation not yet started (empty `__init__.py`)
-- Placeholder application code in `image/main.py`
+- Phase 1: Container implementation ✅
+- Phase 2: K8sExecutionManager (extends jupyter-scheduler's ExecutionManager)
+
+## Code Quality Standards
+
+- **Comments**: Only add comments that explain parts of code that are not evident from the code itself
+- Explain WHY something is done when the reasoning isn't obvious
+- Explain WHAT is being done when the code logic is complex or non-obvious
+- If the code is self-evident, no comment is needed
+- **Quality**: Insist on highest quality standards while avoiding over-engineering
+- **Scope**: Stay strictly within defined scope - no feature creep or unnecessary complexity
