@@ -2,23 +2,43 @@
 
 Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jupyter-scheduler) - execute notebook jobs in containers.
 
-## Quick Start
+**Key Features:**
+- **Pre-populated PVC architecture**: Creates PVC → populates with input files via helper pod → executes notebook in simple single-container job → collects outputs via helper pod
+- **Auto-detection**: Automatically detects local (Kind/minikube) vs cloud (EKS/GKE/AKS) clusters and sets appropriate `imagePullPolicy`
+- **Standard K8s patterns**: Uses `kubectl cp` and helper pods for file transfer
+- **Configurable resource limits**: Memory/CPU controls, supports any K8s cluster, handles files of any size
 
-### Local Development (Kind)
+## Testing
 
-**Prerequisites**: 
+**Prerequisites:**
 - **macOS**: `brew install finch kind`
 - **Linux/Windows**: [Finch install guide](https://github.com/runfinch/finch#installation), [Kind install guide](https://kind.sigs.k8s.io/docs/user/quick-start/#installation)
 
+**Testing instructions (run from project root):**
+
+1. Setup local K8s environment:
 ```bash
-# Setup environment (from project root)
-make dev-env        # Creates Kind cluster, builds and loads image
-
-# Install dependencies
+make dev-env  # Creates Kind cluster, builds and loads image
+```
+2. Install dependencies:
+```bash
 pip install jupyterlab jupyter-scheduler
-
+```
+3. Test with jupyter-scheduler:
+```bash
 # Launch with K8s backend (auto-detects Kind cluster)
 jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.executors.K8sExecutionManager"
+```
+4. Create and run notebook jobs through the jupyter-scheduler UI
+5. Monitor execution (optional):
+```bash
+kubectl get pods                        # See helper pods and execution jobs
+kubectl get jobs                        # See notebook execution jobs
+kubectl logs <job-pod-name>             # See notebook execution logs
+```
+6. Cleanup:
+```bash
+make clean  # Remove Kind cluster
 ```
 
 ### Other Kubernetes Clusters
