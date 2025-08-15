@@ -137,10 +137,6 @@ def save_notebook(nb, output_path):
             nbformat.write(nb, f)
         logger.info(f"Output saved: {output_path}")
         
-        completion_signal = Path(output_path).parent / ".execution_complete"
-        completion_signal.touch()
-        logger.info("Execution completion signaled to sidecar")
-        
     except Exception as e:
         logger.error(f"Failed to save output: {e}")
         sys.exit(1)

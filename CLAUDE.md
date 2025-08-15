@@ -1,6 +1,6 @@
 # Jupyter Scheduler K8s - Development Guide
 
-This project provides a Kubernetes backend for Jupyter Scheduler.
+Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jupyter-scheduler) that extends the ExecutionManager to run notebook jobs in containers.
 
 ## Project Structure
 
@@ -14,7 +14,7 @@ This project provides a Kubernetes backend for Jupyter Scheduler.
 **For local development with Makefile:**
 - **macOS**: Finch (for container management)
 - **Kind**: For local Kubernetes clusters  
-- **Python 3.13+**: Required by pyproject.toml
+- **Python 3.9+**: Required by pyproject.toml
 
 **For any K8s cluster:**
 - Existing Kubernetes cluster (Kind, minikube, EKS, GKE, AKS, etc.)
@@ -65,8 +65,7 @@ kubectl get jobs
 kubectl describe pod <pod-name>
 
 # Check container logs
-kubectl logs <pod-name> -c notebook-executor
-kubectl logs <pod-name> -c output-collector
+kubectl logs <pod-name>
 ```
 
 ### Cleanup
@@ -76,14 +75,16 @@ kubectl logs <pod-name> -c output-collector
 make clean
 ```
 
-## Architecture
+## How It Works
 
-**Sidecar Container Pattern**: Single K8s Job with three containers:
-1. **Init container** (file-receiver): Handles file transfer via kubectl exec
-2. **Main container** (notebook-executor): Executes notebook, signals completion  
-3. **Sidecar container** (output-collector): Provides output access, exits when signaled
+1. Create PVC for storage
+2. Helper pod transfers input files via `kubectl cp`
+3. Job executes notebook in container
+4. Helper pod retrieves outputs via `kubectl cp`
 
-**Auto-Detection**: Automatically detects local vs cloud K8s contexts and sets appropriate image pull policies.
+```
+jupyter-scheduler → K8sExecutionManager → Kubernetes Job → Container
+```
 
 ## Dependencies
 
@@ -93,10 +94,7 @@ make clean
 - `nbformat`, `nbconvert` - Notebook processing
 - `uv` for build system
 
-
-
 ## Code Quality Standards
-
 - **Comments**: Only add comments that explain parts of code that are not evident from the code itself
 - Explain WHY something is done when the reasoning isn't obvious
 - Explain WHAT is being done when the code logic is complex or non-obvious
@@ -107,8 +105,8 @@ make clean
 ## Implementation Requirements
 
 - **`supported_features` method**: Must be kept up to date with actual backend capabilities
-  - Currently supports: `parameters`, `timeout_seconds`, `output_formats`
-  - Explicitly declares unsupported: `job_name`, `stop_job`, `delete_job`
+  - Currently supports: `parameters`, `output_formats`
+  - Explicitly declares unsupported: `timeout_seconds`, `job_name`, `stop_job`, `delete_job`
   - This method is abstract and required by jupyter-scheduler
   - Controls UI feature availability and user expectations
 
@@ -178,19 +176,12 @@ make clean
 - Supports in-cluster execution when jupyter-scheduler runs inside K8s
 - Configurable namespace, image, and resource limits
 
-### NEXT STEPS
+### PLANNED FEATURES
 
-- **GPU Support**: Resource allocation for ML workloads with K8s GPU scheduling
-- **Cloud Cluster Testing**: Validate deployment on EKS, GKE, AKS (should work but untested)
-- **PyPI Publishing**: Package and publish to PyPI for easy installation
-- **CI/CD Pipeline**: Automated testing and deployment with GitHub Actions
-- **Advanced Job Control**: Enable stop/delete K8s jobs from jupyter-scheduler UI
-  - Implement `stop_job` and `delete_job` methods in K8sExecutionManager
-  - Update `supported_features` to enable UI controls
-- **Container-Based Scheduling**: Support scheduled execution within containers
-  - Integrate with jupyter-scheduler's `Scheduler` class
-  - Container runs continuously with cron-like scheduling
-  - Maintains connection to jupyter-scheduler UI for monitoring
+- **GPU resource configuration for k8s jobs from UI**: Configure GPU count/type for ML workloads
+- **Kubernetes job stop/deletion from UI**: Implement `stop_job` and `delete_job` methods
+- **Kubernetes-native scheduling from UI**: Use K8s CronJobs instead of SQL-based job definitions
+- **PyPI package publishing**: Package and publish for easy installation
 
 ## Configuration
 
@@ -204,11 +195,10 @@ c.SchedulerApp.execution_manager_class = "jupyter_scheduler_k8s.executors.K8sExe
 **Environment variables:**
 - `K8S_NAMESPACE`: Kubernetes namespace (default: "default")
 - `K8S_IMAGE`: Container image to use (default: "jupyter-scheduler-k8s:latest")
-- `K8S_IMAGE_PULL_POLICY`: Image pull policy (default: `Never` for local, `Always` for cloud)
+- `K8S_IMAGE_PULL_POLICY`: Image pull policy (auto-detected: `Never` for local, `Always` for cloud)
 - `K8S_STORAGE_SIZE`: PVC size for notebooks (default: "100Mi")
-- Resource limits:
-  - Helper pods: `K8S_RECEIVER_MEMORY_REQUEST/LIMIT`, `K8S_RECEIVER_CPU_REQUEST/LIMIT`
-  - Execution pods: `K8S_EXECUTOR_MEMORY_REQUEST/LIMIT`, `K8S_EXECUTOR_CPU_REQUEST/LIMIT`
+- `K8S_EXECUTOR_MEMORY_REQUEST/LIMIT`: Container memory (default: "512Mi"/"2Gi")
+- `K8S_EXECUTOR_CPU_REQUEST/LIMIT`: Container CPU (default: "500m"/"2000m")
 
 ## Lessons Learned
 

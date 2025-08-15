@@ -12,7 +12,6 @@ import nbformat
 import nbconvert
 from kubernetes import client, config, watch
 from kubernetes.client.rest import ApiException
-from kubernetes.stream import stream
 from jupyter_scheduler.executors import ExecutionManager
 from jupyter_scheduler.models import JobFeature
 from jupyter_scheduler.orm import Job
@@ -44,10 +43,6 @@ class K8sExecutionManager(ExecutionManager):
         default_pull_policy = self._detect_image_pull_policy()
         self.image_pull_policy = os.environ.get('K8S_IMAGE_PULL_POLICY', default_pull_policy)
         
-        self.receiver_memory_request = os.environ.get('K8S_RECEIVER_MEMORY_REQUEST', '64Mi')
-        self.receiver_memory_limit = os.environ.get('K8S_RECEIVER_MEMORY_LIMIT', '256Mi')
-        self.receiver_cpu_request = os.environ.get('K8S_RECEIVER_CPU_REQUEST', '100m')
-        self.receiver_cpu_limit = os.environ.get('K8S_RECEIVER_CPU_LIMIT', '500m')
         self.executor_memory_request = os.environ.get('K8S_EXECUTOR_MEMORY_REQUEST', '512Mi')
         self.executor_memory_limit = os.environ.get('K8S_EXECUTOR_MEMORY_LIMIT', '2Gi')
         self.executor_cpu_request = os.environ.get('K8S_EXECUTOR_CPU_REQUEST', '500m')
