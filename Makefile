@@ -116,3 +116,30 @@ build-image:
 	@echo "Building Docker image $(IMAGE_NAME):$(IMAGE_TAG)..."
 	finch build -t $(IMAGE_NAME):$(IMAGE_TAG) ./image
 	@echo "✅ Image $(IMAGE_NAME):$(IMAGE_TAG) built successfully"
+
+.PHONY: load-image
+load-image: build-image
+	@echo "Loading image into Kind cluster..."
+	@echo "Exporting image to tar..."
+	@finch save $(IMAGE_NAME):$(IMAGE_TAG) -o ./$(IMAGE_NAME).tar
+	@echo "Loading tar into Kind..."
+	@KIND_EXPERIMENTAL_PROVIDER=finch kind load image-archive ./$(IMAGE_NAME).tar --name $(CLUSTER_NAME)
+	@echo "Cleaning up tar file..."
+	@rm -f ./$(IMAGE_NAME).tar
+	@echo "✅ Image loaded into Kind cluster"
+	@echo ""
+	@echo "💡 For local Kind development, use these environment variables:"
+	@echo "export K8S_IMAGE=\"$(IMAGE_NAME):$(IMAGE_TAG)\""
+	@echo "export K8S_IMAGE_PULL_POLICY=\"Never\""
+
+.PHONY: dev-env
+dev-env: load-image
+	@echo ""
+	@echo "🚀 Development environment ready!"
+	@echo ""
+	@echo "Run this to configure your shell:"
+	@echo "export K8S_IMAGE=\"$(IMAGE_NAME):$(IMAGE_TAG)\""
+	@echo "export K8S_IMAGE_PULL_POLICY=\"Never\""
+	@echo ""
+	@echo "Then start jupyter-scheduler:"
+	@echo "jupyter lab --SchedulerApp.execution_manager_class=\"jupyter_scheduler_k8s.executors.K8sExecutionManager\""
