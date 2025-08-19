@@ -1,4 +1,3 @@
-
 """
 Notebook executor for K8s jobs.
 Reads notebook from NOTEBOOK_PATH, executes it, saves to OUTPUT_PATH.
@@ -12,6 +11,7 @@ import shutil
 from pathlib import Path
 
 import nbformat
+import nbconvert
 from nbconvert.preprocessors import ExecutePreprocessor, CellExecutionError
 
 logging.basicConfig(
@@ -29,6 +29,7 @@ def main():
     kernel_name = os.environ.get('KERNEL_NAME', 'python3')
     timeout = int(os.environ.get('TIMEOUT', '600'))
     package_input_folder = os.environ.get('PACKAGE_INPUT_FOLDER', 'false').lower() == 'true'
+    output_formats_json = os.environ.get('OUTPUT_FORMATS', '[]')
     
     if not notebook_path:
         logger.error("NOTEBOOK_PATH environment variable is required")
@@ -42,6 +43,12 @@ def main():
         parameters = json.loads(parameters_json)
     except json.JSONDecodeError as e:
         logger.error(f"Invalid PARAMETERS JSON: {e}")
+        sys.exit(1)
+    
+    try:
+        output_formats = json.loads(output_formats_json)
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid OUTPUT_FORMATS JSON: {e}")
         sys.exit(1)
     
     if package_input_folder:
@@ -64,6 +71,8 @@ def main():
     
     execute_notebook(nb, execution_dir, kernel_name, timeout)
     save_notebook(nb, output_path)
+    
+    generate_output_formats(nb, output_path, output_formats)
 
 
 def copy_input_folder(notebook_path):
@@ -127,9 +136,41 @@ def save_notebook(nb, output_path):
         with open(output_path, 'w') as f:
             nbformat.write(nb, f)
         logger.info(f"Output saved: {output_path}")
+        
     except Exception as e:
         logger.error(f"Failed to save output: {e}")
         sys.exit(1)
+
+
+def generate_output_formats(nb, output_path, requested_formats):
+    """Generate only the requested output formats from the executed notebook.
+    
+    This mirrors jupyter-scheduler's approach in create_output_files method.
+    Only generates formats that were specifically requested.
+    """
+    output_dir = Path(output_path).parent
+    base_name = Path(output_path).stem
+    
+    for output_format in requested_formats:
+        if output_format == 'ipynb':
+            # Already saved as the main output
+            continue
+            
+        try:
+            exporter_class = nbconvert.get_exporter(output_format)
+            exporter = exporter_class()
+            
+            output, _ = exporter.from_notebook_node(nb)
+            
+            output_file = output_dir / f"{base_name}.{output_format}"
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(output)
+                    
+            logger.info(f"{output_format.upper()} output saved: {output_file}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to generate {output_format.upper()} output: {e}")
 
 
 if __name__ == "__main__":
