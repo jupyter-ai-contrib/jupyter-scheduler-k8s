@@ -113,11 +113,19 @@ This document contains development notes, architecture decisions, and lessons le
 
 **Example Configuration:**
 ```bash
-export S3_BUCKET="my-company-notebook-outputs"
-export S3_ENDPOINT_URL="http://minio.local:9000"  # Optional
+# Required: S3 bucket and AWS credentials
+export S3_BUCKET="..."
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+# Optional: for temporary credentials
+export AWS_SESSION_TOKEN="..."
+# Optional: for S3-compatible storage
+export S3_ENDPOINT_URL="..."
 
 jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
 ```
+
+**Critical:** AWS credentials must be set in the same terminal session where you launch Jupyter Lab. The system passes these credentials to Kubernetes containers for S3 access.
 
 ### Phase 3: Future Enhancements
 - **GPU resource configuration for k8s jobs from UI**: Configure GPU count/type for ML workloads
@@ -179,11 +187,15 @@ jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecut
 
 ## Current Implementation Status
 
-### Latest Architecture: S3 Storage
+### Latest Architecture: S3 Storage (Production Ready ✅)
 1. **Upload inputs** - AWS CLI sync to S3 bucket
-2. **Container execution** - Job downloads from S3, executes notebook, uploads outputs
+2. **Container execution** - Job downloads from S3, executes notebook, uploads outputs  
 3. **Download outputs** - AWS CLI sync from S3 to staging directory
 4. **Durability** - Files survive cluster failures, can be retrieved later
+
+**Key Implementation Details:**
+- **AWS credentials passed at runtime**: K8sExecutionManager passes host AWS credentials to containers via environment variables
+- **Auto pod debugging**: When jobs fail, automatically captures pod logs and container status for troubleshooting
 
 
 ## Code Quality Standards

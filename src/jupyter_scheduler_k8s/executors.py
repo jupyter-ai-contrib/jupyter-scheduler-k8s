@@ -233,6 +233,34 @@ class K8sExecutionManager(ExecutionManager):
 
                 if job_status.failed:
                     logger.error(f"Job {job_name} failed")
+                    # Get pod logs for debugging
+                    try:
+                        pods = self.k8s_core.list_namespaced_pod(
+                            namespace=self.namespace, 
+                            label_selector=f"job-name={job_name}"
+                        )
+                        for pod in pods.items:
+                            logger.error(f"Pod {pod.metadata.name} status: {pod.status.phase}")
+                            if pod.status.container_statuses:
+                                for container in pod.status.container_statuses:
+                                    if container.state.waiting:
+                                        logger.error(f"Container waiting: {container.state.waiting.reason} - {container.state.waiting.message}")
+                                    elif container.state.terminated:
+                                        logger.error(f"Container terminated: exit_code={container.state.terminated.exit_code}, reason={container.state.terminated.reason}")
+                            
+                            # Get pod logs
+                            try:
+                                logs = self.k8s_core.read_namespaced_pod_log(
+                                    name=pod.metadata.name,
+                                    namespace=self.namespace,
+                                    tail_lines=50
+                                )
+                                logger.error(f"Pod logs:\n{logs}")
+                            except Exception as log_error:
+                                logger.error(f"Could not get pod logs: {log_error}")
+                    except Exception as debug_error:
+                        logger.error(f"Could not get pod debugging info: {debug_error}")
+                    
                     w.stop()
                     raise RuntimeError(f"Job {job_name} failed")
 
@@ -321,6 +349,27 @@ class K8sExecutionManager(ExecutionManager):
             env_vars.append(
                 client.V1EnvVar(name="S3_ENDPOINT_URL", value=self.s3_endpoint_url)
             )
+            
+        # Add AWS credentials from environment
+        aws_credentials = [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY", 
+            "AWS_SESSION_TOKEN",
+            "AWS_DEFAULT_REGION",
+            "AWS_REGION"
+        ]
+        passed_credentials = []
+        for cred_var in aws_credentials:
+            if cred_var in os.environ:
+                env_vars.append(
+                    client.V1EnvVar(name=cred_var, value=os.environ[cred_var])
+                )
+                passed_credentials.append(cred_var)
+        
+        if passed_credentials:
+            logger.info(f"    Passing AWS credentials: {', '.join(passed_credentials)}")
+        else:
+            logger.warning("    ⚠️  No AWS credentials found in environment - container may fail")
 
         main_container = client.V1Container(
             name="notebook-executor",
