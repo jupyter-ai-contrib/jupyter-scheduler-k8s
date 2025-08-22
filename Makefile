@@ -116,3 +116,69 @@ build-image:
 	@echo "Building Docker image $(IMAGE_NAME):$(IMAGE_TAG)..."
 	finch build -t $(IMAGE_NAME):$(IMAGE_TAG) ./image
 	@echo "✅ Image $(IMAGE_NAME):$(IMAGE_TAG) built successfully"
+
+.PHONY: load-image
+load-image: build-image
+	@echo "Loading image into Kind cluster..."
+	@echo "Exporting image to tar..."
+	@finch save $(IMAGE_NAME):$(IMAGE_TAG) -o ./$(IMAGE_NAME).tar
+	@echo "Loading tar into Kind..."
+	@KIND_EXPERIMENTAL_PROVIDER=finch kind load image-archive ./$(IMAGE_NAME).tar --name $(CLUSTER_NAME)
+	@echo "Cleaning up tar file..."
+	@rm -f ./$(IMAGE_NAME).tar
+	@echo "✅ Image loaded into Kind cluster"
+	@echo ""
+	@echo "💡 For local Kind development, use these environment variables:"
+	@echo "export K8S_IMAGE=\"$(IMAGE_NAME):$(IMAGE_TAG)\""
+	@echo "export K8S_IMAGE_PULL_POLICY=\"Never\""
+
+.PHONY: dev-env
+dev-env: load-image
+	@echo ""
+	@echo "🚀 Development environment ready!"
+	@echo ""
+	@echo "Run this to configure your shell:"
+	@echo "export K8S_IMAGE=\"$(IMAGE_NAME):$(IMAGE_TAG)\""
+	@echo "export K8S_IMAGE_PULL_POLICY=\"Never\""
+	@echo ""
+	@echo "Then start jupyter-scheduler:"
+	@echo "jupyter lab --SchedulerApp.execution_manager_class=\"jupyter_scheduler_k8s.executors.K8sExecutionManager\""
+
+.PHONY: status
+status:
+	@echo "📊 Development Environment Status"
+	@echo "================================="
+	@echo ""
+	@echo "Finch VM:"
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		finch vm status || echo "❌ Finch not installed"; \
+	else \
+		echo "⚠️  Not on macOS, Finch VM not applicable"; \
+	fi
+	@echo ""
+	@echo "Kind cluster '$(CLUSTER_NAME)':"
+	@if kind get clusters 2>/dev/null | grep -q "$(CLUSTER_NAME)"; then \
+		echo "✅ Cluster exists"; \
+		echo "Nodes:"; \
+		kubectl get nodes --kubeconfig=$(KUBECONFIG) 2>/dev/null || echo "⚠️  Cannot connect to cluster"; \
+	else \
+		echo "❌ Cluster does not exist (run 'make setup')"; \
+	fi
+	@echo ""
+	@echo "Container image '$(IMAGE_NAME):$(IMAGE_TAG)':"
+	@if finch images | grep -q "$(IMAGE_NAME).*$(IMAGE_TAG)"; then \
+		echo "✅ Image exists locally"; \
+	else \
+		echo "❌ Image not found (run 'make build-image')"; \
+	fi
+	@echo ""
+	@echo "Image in Kind cluster:"
+	@if kind get clusters 2>/dev/null | grep -q "$(CLUSTER_NAME)"; then \
+		if finch exec $(CLUSTER_NAME)-control-plane crictl images 2>/dev/null | grep -q "$(IMAGE_NAME).*$(IMAGE_TAG)"; then \
+			echo "✅ Image loaded in Kind cluster"; \
+		else \
+			echo "⚠️  Image not in Kind cluster (run 'make load-image')"; \
+		fi \
+	else \
+		echo "⚠️  Cluster not running"; \
+	fi
