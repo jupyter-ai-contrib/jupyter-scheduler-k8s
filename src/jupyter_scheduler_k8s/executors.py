@@ -82,6 +82,7 @@ class K8sExecutionManager(ExecutionManager):
             JobFeature.delete_job: False,
         }
     
+    @classmethod
     def validate(cls, input_path: str) -> bool:
         with open(input_path, encoding="utf-8") as f:
             nb = nbformat.read(f, as_version=4)
@@ -187,7 +188,7 @@ class K8sExecutionManager(ExecutionManager):
                 containers=[V1Container(
                     name="file-copier",
                     image="busybox:latest",
-                    command=["sleep", "300"]
+                    command=["sleep", "300"],
                     volume_mounts=[V1VolumeMount(
                         name="workspace",
                         mount_path="/workspace"

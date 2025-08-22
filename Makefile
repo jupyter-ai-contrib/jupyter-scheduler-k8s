@@ -143,3 +143,42 @@ dev-env: load-image
 	@echo ""
 	@echo "Then start jupyter-scheduler:"
 	@echo "jupyter lab --SchedulerApp.execution_manager_class=\"jupyter_scheduler_k8s.executors.K8sExecutionManager\""
+
+.PHONY: status
+status:
+	@echo "📊 Development Environment Status"
+	@echo "================================="
+	@echo ""
+	@echo "Finch VM:"
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		finch vm status || echo "❌ Finch not installed"; \
+	else \
+		echo "⚠️  Not on macOS, Finch VM not applicable"; \
+	fi
+	@echo ""
+	@echo "Kind cluster '$(CLUSTER_NAME)':"
+	@if kind get clusters 2>/dev/null | grep -q "$(CLUSTER_NAME)"; then \
+		echo "✅ Cluster exists"; \
+		echo "Nodes:"; \
+		kubectl get nodes --kubeconfig=$(KUBECONFIG) 2>/dev/null || echo "⚠️  Cannot connect to cluster"; \
+	else \
+		echo "❌ Cluster does not exist (run 'make setup')"; \
+	fi
+	@echo ""
+	@echo "Container image '$(IMAGE_NAME):$(IMAGE_TAG)':"
+	@if finch images | grep -q "$(IMAGE_NAME).*$(IMAGE_TAG)"; then \
+		echo "✅ Image exists locally"; \
+	else \
+		echo "❌ Image not found (run 'make build-image')"; \
+	fi
+	@echo ""
+	@echo "Image in Kind cluster:"
+	@if kind get clusters 2>/dev/null | grep -q "$(CLUSTER_NAME)"; then \
+		if finch exec $(CLUSTER_NAME)-control-plane crictl images 2>/dev/null | grep -q "$(IMAGE_NAME).*$(IMAGE_TAG)"; then \
+			echo "✅ Image loaded in Kind cluster"; \
+		else \
+			echo "⚠️  Image not in Kind cluster (run 'make load-image')"; \
+		fi \
+	else \
+		echo "⚠️  Cluster not running"; \
+	fi

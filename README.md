@@ -1,32 +1,33 @@
 # jupyter-scheduler-k8s
 
-Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jupyter-scheduler) - execute notebook jobs in containers.
-
-## Overview
-
-Extends [Jupyter Scheduler](https://github.com/jupyter-server/jupyter-scheduler) to run notebook jobs in Kubernetes pods instead of local processes by implementing a custom ExecutionManager.
+Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jupyter-scheduler) - execute notebook jobs in containers instead of local processes.
 
 ## How It Works
 
-1. Create PVC for storage
-2. Helper pod transfers input files via `kubectl cp`
-3. Job executes notebook in container
-4. Helper pod retrieves outputs via `kubectl cp`
+1. Schedule notebook jobs through JupyterLab UI (runs locally)
+2. jupyter-scheduler-k8s sends job to your Kubernetes cluster (local or cloud)
+3. Notebook executes in isolated container with dependencies
+4. Results return to JupyterLab for download
 
-```
-jupyter-scheduler → K8sExecutionManager → Kubernetes Job → Container
-```
-
-Supports parameter injection, multiple output formats, and works with any K8s cluster (Kind, minikube, EKS, GKE, AKS).
+**Key features:**
+- Parameter injection for notebook customization
+- Multiple output formats (HTML, PDF, etc.)
+- Works with any Kubernetes cluster (Kind, minikube, EKS, GKE, AKS)
+- Configurable resource limits (CPU/memory)
 
 ## Requirements
 
-- Kubernetes cluster with kubectl access
+- Kubernetes cluster (Kind, minikube, or cloud provider)
 - Python 3.9+
 - jupyter-scheduler>=2.11.0
 
 **For local development:**
 - Finch and Kind (install guides: [Finch](https://github.com/runfinch/finch#installation), [Kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation))
+
+**Connecting to your cluster:**
+- Default: Reads cluster credentials from `~/.kube/config`
+- Custom: Set `KUBECONFIG` environment variable to your kubeconfig path
+- Cloud: Your provider's CLI sets this up (e.g., `aws eks update-kubeconfig`)
 
 ## Installation
 
@@ -36,30 +37,30 @@ Supports parameter injection, multiple output formats, and works with any K8s cl
 # One-command setup: builds image, loads into Kind cluster (run from repo directory)
 make dev-env
 
-# Install jupyter-scheduler
-pip install jupyterlab jupyter-scheduler
+# (Optional) Verify Kind cluster and Finch image are ready
+make status
+
+# Install the package and all dependencies (including jupyterlab and jupyter-scheduler)
+pip install -e .
 
 # Configure environment (as shown by make dev-env output)
 export K8S_IMAGE="jupyter-scheduler-k8s:latest"
 export K8S_IMAGE_PULL_POLICY="Never"
 
-# Launch Jupyter Lab with Jupyter Scheduler configured to use Kubernetes backend
-jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.executors.K8sExecutionManager"
+# Launch Jupyter Lab with K8s backend
+jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
 ```
 
 ### Cloud Deployment
 
 ```bash
-# Install the Python package (run from repo directory)
+# Install the package and all dependencies (run from repo directory)
 pip install -e .
 
-# Install jupyter-scheduler
-pip install jupyterlab jupyter-scheduler
-
-# Build image (run from repo directory)
+# Build image using Makefile
 make build-image
 
-# Tag and push to your registry
+# Tag and push to your registry (manual steps - registry-specific)
 finch tag jupyter-scheduler-k8s:latest your-registry/jupyter-scheduler-k8s:latest
 finch push your-registry/jupyter-scheduler-k8s:latest
 
@@ -67,20 +68,18 @@ finch push your-registry/jupyter-scheduler-k8s:latest
 export K8S_IMAGE="your-registry/jupyter-scheduler-k8s:latest"
 export K8S_NAMESPACE="your-namespace"
 
-# Launch Jupyter Lab with Jupyter Scheduler configured to use Kubernetes backend
-jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.executors.K8sExecutionManager"
+# Launch Jupyter Lab with K8s backend
+jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
 ```
 
 ## Configuration
 
 ### Environment Variables
 
+**K8s Backend Configuration** (set by user):
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `NOTEBOOK_PATH` | Yes | - | Path to notebook file |
-| `OUTPUT_PATH` | Yes | - | Path to save executed notebook |
-| `PARAMETERS` | No | `{}` | JSON parameters to inject |
-| `PACKAGE_INPUT_FOLDER` | No | `false` | Include all files from notebook directory |
 | `K8S_NAMESPACE` | No | `default` | Kubernetes namespace |
 | `K8S_IMAGE` | No | `jupyter-scheduler-k8s:latest` | Container image to use |
 | `K8S_IMAGE_PULL_POLICY` | No | Auto-detected | `Never` for local clusters, `Always` for cloud |
@@ -89,6 +88,18 @@ jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.execut
 | `K8S_EXECUTOR_MEMORY_LIMIT` | No | `2Gi` | Container memory limit |
 | `K8S_EXECUTOR_CPU_REQUEST` | No | `500m` | Container CPU request |
 | `K8S_EXECUTOR_CPU_LIMIT` | No | `2000m` | Container CPU limit |
+
+**Container Execution Variables** (set automatically by K8sExecutionManager, or manually for testing):
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `NOTEBOOK_PATH` | Yes | - | Path to notebook file to execute |
+| `OUTPUT_PATH` | Yes | - | Path where executed notebook will be saved |
+| `PARAMETERS` | No | `{}` | JSON string of parameters to inject into notebook |
+| `OUTPUT_FORMATS` | No | `[]` | JSON array of output formats (e.g., `["html", "pdf"]`) |
+| `PACKAGE_INPUT_FOLDER` | No | `false` | Copy entire notebook directory to working directory |
+| `KERNEL_NAME` | No | `python3` | Jupyter kernel to use for execution |
+| `TIMEOUT` | No | `600` | Execution timeout in seconds |
 
 ## Testing
 
@@ -100,29 +111,26 @@ jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.execut
 
 1. Setup local K8s environment:
 ```bash
-make dev-env  # Creates Kind cluster, builds and loads image (run from repo directory)
+make dev-env  # Creates Kind cluster, builds and loads image
+
+# Configure environment
+export K8S_IMAGE="jupyter-scheduler-k8s:latest"
+export K8S_IMAGE_PULL_POLICY="Never"
 ```
 
-2. Install dependencies:
+2. Install the package and dependencies:
 ```bash
-pip install jupyterlab jupyter-scheduler
+pip install -e .
 ```
 
 3. Launch with K8s backend:
 ```bash
-jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.executors.K8sExecutionManager"
+jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
 ```
 
-4. Create and run notebook jobs through the jupyter-scheduler UI
+4. Create and run notebook jobs through the jupyter-scheduler UI (supports parameters and multiple output formats)
 
-5. Monitor execution (optional):
-```bash
-kubectl get pods    # See helper pods and execution jobs
-kubectl get jobs    # See notebook execution jobs
-kubectl logs <pod>  # See notebook execution logs
-```
-
-6. Cleanup:
+5. Cleanup:
 ```bash
 make clean  # Remove Kind cluster
 ```
@@ -130,59 +138,65 @@ make clean  # Remove Kind cluster
 **Test container directly:**
 
 ```bash
-# Test with provided notebook (run from repo directory)
+# Basic test with provided notebook (run from repo directory)
 finch run --rm \
   -e NOTEBOOK_PATH="/workspace/tests/test_notebook.ipynb" \
   -e OUTPUT_PATH="/workspace/output.ipynb" \
   -v "$(pwd):/workspace" \
   jupyter-scheduler-k8s:latest
 
-# Test with copying input folder (run from repo directory)
+# Test with parameters - note the single quotes to avoid shell escaping issues
+finch run --rm \
+  -e NOTEBOOK_PATH="/workspace/tests/test_notebook.ipynb" \
+  -e OUTPUT_PATH="/workspace/output_with_params.ipynb" \
+  -e 'PARAMETERS={"test_param":"Hello from K8s"}' \
+  -v "$(pwd):/workspace" \
+  jupyter-scheduler-k8s:latest
+
+# Test with copying input folder (includes all files from notebook directory)
 finch run --rm \
   -e NOTEBOOK_PATH="/workspace/tests/test_with_data.ipynb" \
-  -e OUTPUT_PATH="/workspace/output.ipynb" \
+  -e OUTPUT_PATH="/workspace/output_with_data.ipynb" \
   -e PACKAGE_INPUT_FOLDER="true" \
   -v "$(pwd):/workspace" \
   jupyter-scheduler-k8s:latest
 ```
 
+**Note on parameters**: When passing JSON via PARAMETERS environment variable, use single quotes around the entire `KEY=VALUE` pair to avoid shell escaping issues. In production, K8sExecutionManager sets these programmatically, avoiding shell complexity.
+
 ## Development
 
-### Development Workflow
+**Initial setup:**
+1. `make dev-env` - Create Kind cluster and load container image
+2. `pip install -e .` - Install package in editable mode
 
+**Python code changes** (K8sExecutionManager):
+- Changes are picked up automatically (editable install)
+- Just restart JupyterLab
+
+**Container changes** (notebook executor):
 ```bash
-# After making code changes, rebuild and test
 make build-image
 make load-image
-
-# Test changes
-jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.executors.K8sExecutionManager"
 ```
 
-### Manual Setup Steps
-
+**Useful commands:**
 ```bash
-make setup          # Finch VM + Kind cluster  
-make build-image    # Build container
-make load-image     # Load into Kind
-make kubectl-kind   # Configure kubectl
-```
-
-### Cleanup
-
-```bash
-make clean          # Remove cluster + stop Finch VM
+make status         # Check environment status
+make clean          # Remove cluster and cleanup
 ```
 
 ## Implementation Status
 
 ### Working Features ✅
+- Custom `K8sExecutionManager` that extends `jupyter-scheduler.ExecutionManager` and runs notebook jobs in Kubernetes pods using a pre-populated Persistent Volume Claim (PVC) approach for input file handling
 - Parameter injection and multiple output formats
 - PVC-based file handling for any notebook size
 - Configurable CPU/memory limits
-- Event-driven job monitoring
+- Event-driven job monitoring with Watch API
 
 ### Planned 🚧
+- s3 / configurable approach for input file handling
 - GPU resource configuration for k8s jobs from UI
 - Kubernetes job stop/deletion from UI
 - Kubernetes-native scheduling from UI
