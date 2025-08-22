@@ -127,10 +127,6 @@ load-image: build-image
 	@echo "Cleaning up tar file..."
 	@rm -f ./$(IMAGE_NAME).tar
 	@echo "✅ Image loaded into Kind cluster"
-	@echo ""
-	@echo "💡 For local Kind development, use these environment variables:"
-	@echo "export K8S_IMAGE=\"$(IMAGE_NAME):$(IMAGE_TAG)\""
-	@echo "export K8S_IMAGE_PULL_POLICY=\"Never\""
 
 .PHONY: dev-env
 dev-env: load-image
@@ -139,10 +135,10 @@ dev-env: load-image
 	@echo ""
 	@echo "Run this to configure your shell:"
 	@echo "export K8S_IMAGE=\"$(IMAGE_NAME):$(IMAGE_TAG)\""
-	@echo "export K8S_IMAGE_PULL_POLICY=\"Never\""
+	@echo "export S3_BUCKET=\"<your-bucket-name>\""
 	@echo ""
 	@echo "Then start jupyter-scheduler:"
-	@echo "jupyter lab --SchedulerApp.execution_manager_class=\"jupyter_scheduler_k8s.executors.K8sExecutionManager\""
+	@echo "jupyter lab --Scheduler.execution_manager_class=\"jupyter_scheduler_k8s.K8sExecutionManager\""
 
 .PHONY: status
 status:
@@ -151,7 +147,18 @@ status:
 	@echo ""
 	@echo "Finch VM:"
 	@if [ "$$(uname)" = "Darwin" ]; then \
-		finch vm status || echo "❌ Finch not installed"; \
+		if command -v finch >/dev/null 2>&1; then \
+			VM_STATUS=$$(finch vm status 2>/dev/null || echo "Unknown"); \
+			if echo "$$VM_STATUS" | grep -q "Running"; then \
+				echo "✅ Running"; \
+			elif echo "$$VM_STATUS" | grep -q "Stopped"; then \
+				echo "⚠️  Stopped (run 'finch vm start')"; \
+			else \
+				echo "❌ $$VM_STATUS"; \
+			fi; \
+		else \
+			echo "❌ Finch not installed"; \
+		fi; \
 	else \
 		echo "⚠️  Not on macOS, Finch VM not applicable"; \
 	fi
@@ -181,4 +188,20 @@ status:
 		fi \
 	else \
 		echo "⚠️  Cluster not running"; \
+	fi
+	@echo ""
+	@echo "S3 Storage:"
+	@if command -v aws >/dev/null 2>&1; then \
+		echo "✅ AWS CLI installed"; \
+		if [ -n "$$S3_BUCKET" ]; then \
+			if aws s3 ls "s3://$$S3_BUCKET" >/dev/null 2>&1; then \
+				echo "✅ S3 bucket '$$S3_BUCKET' accessible"; \
+			else \
+				echo "❌ S3 bucket '$$S3_BUCKET' not accessible (check AWS auth)"; \
+			fi; \
+		else \
+			echo "⚠️  S3_BUCKET environment variable not set"; \
+		fi; \
+	else \
+		echo "❌ AWS CLI not installed"; \
 	fi

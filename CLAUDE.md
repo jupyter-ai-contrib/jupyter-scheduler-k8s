@@ -89,6 +89,36 @@ This document contains development notes, architecture decisions, and lessons le
 - **In-cluster**: When jupyter-scheduler runs inside K8s
 - Settings: namespace, image, resource limits all configurable
 
+### S3 Configuration (Optional - for Durability)
+
+**Purpose:** Persist files beyond jupyter-scheduler server and K8s cluster failures
+
+**Environment Variables:**
+- `S3_BUCKET`: S3 bucket name (required for S3 mode, e.g., "my-notebook-outputs")
+- `S3_ENDPOINT_URL`: Custom S3 endpoint (optional, for MinIO, GCS S3 API, etc.)
+
+**AWS Credentials:** Use standard AWS credential methods:
+- IAM roles (recommended for EC2/EKS)
+- AWS credentials file (`~/.aws/credentials`)  
+- Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+
+**Required Configuration:**
+- `S3_BUCKET` must be set - no fallback mode
+- Ensures consistent production-like testing across all environments
+
+**S3-Compatible Storage:**
+- **AWS S3**: Standard configuration
+- **MinIO**: Set `S3_ENDPOINT_URL=<your-minio-server-url>`
+- **Google Cloud Storage**: Set `S3_ENDPOINT_URL=https://storage.googleapis.com`
+
+**Example Configuration:**
+```bash
+export S3_BUCKET="my-company-notebook-outputs"
+export S3_ENDPOINT_URL="http://minio.local:9000"  # Optional
+
+jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
+```
+
 ### Phase 3: Future Enhancements
 - **GPU resource configuration for k8s jobs from UI**: Configure GPU count/type for ML workloads
 - **Kubernetes job stop/deletion from UI**: Implement `stop_job` and `delete_job` methods
@@ -126,24 +156,48 @@ This document contains development notes, architecture decisions, and lessons le
 - **Generic output handling**: Let nbconvert handle format details, treat all outputs as text (following jupyter-scheduler pattern)
 - **Environment variable coordination**: OUTPUT_PATH and OUTPUT_FORMATS must align between executor and container
 
+## S3 Implementation Architecture
+
+**Requirement:** Files must survive jupyter-scheduler server and K8s cluster failures.
+
+**Solution: AWS CLI for S3 operations**
+- Handles directory recursion, multipart uploads, retries automatically
+- Works with S3-compatible storage (AWS S3, MinIO, GCS with S3 API)
+- Single command for complex operations: `aws s3 sync source/ dest/`
+- **Industry standard**: Used by major systems for reliable S3 operations:
+  - **AWS Batch**: Official container file transfers
+  - **GitHub Actions**: aws-actions/configure-aws-credentials + aws s3 sync
+  - **Kubernetes Jobs**: Argo Workflows, Tekton Pipelines S3 artifacts
+  - **Apache Airflow**: S3Hook uses aws cli subprocess calls
+  - **Jupyter Enterprise Gateway**: AWS CLI for remote kernel file management
+
+**Implementation:**
+- K8sExecutionManager: `subprocess.run(['aws', 's3', 'sync', staging_dir, s3_path])`
+- Container: `aws s3 sync $S3_INPUT_PREFIX /tmp/inputs/`
+- Add `awscli` to both pyproject.toml and container image
+- Required S3_BUCKET env var, no fallback for consistency
+
 ## Current Implementation Status
 
-### Latest Architecture: Pre-Populated PVC
-1. **Create PVC** - Request storage from K8s
-2. **Helper Pod + kubectl cp** - Populate PVC with input files  
-3. **Simple Job** - Single container execution (no coordination complexity)
-4. **Helper Pod + kubectl cp** - Collect outputs from PVC
+### Latest Architecture: S3 Storage
+1. **Upload inputs** - AWS CLI sync to S3 bucket
+2. **Container execution** - Job downloads from S3, executes notebook, uploads outputs
+3. **Download outputs** - AWS CLI sync from S3 to staging directory
+4. **Durability** - Files survive cluster failures, can be retrieved later
+
 
 ## Code Quality Standards
 
 - **Comments**: Only add comments that explain parts of code that are not evident from the code itself
 - Explain WHY something is done when the reasoning isn't obvious
+- Comments above the line they describe, not inline
 - Explain WHAT is being done when the code logic is complex or non-obvious
 - If the code is self-evident, no comment is needed
 - **Quality**: Insist on highest quality standards while avoiding over-engineering
 - **Scope**: Stay strictly within defined scope - no feature creep or unnecessary complexity
-- **Dead Code Removal**: Always aggressively remove dead code from old implementations
-  - When architecture evolves (e.g., sidecar → pre-populated PVC), delete all unused methods
-  - Don't leave old approaches "just in case" - it creates confusion and bloat
-  - A 240+ line reduction (like removing the old sidecar code) is a good thing
-  - Clean implementations are easier to understand, debug, and maintain
+
+## Documentation Standards
+
+- **Placeholder URLs/Values**: Use angle bracket format `<placeholder-description>`. Examples: `<your-s3-endpoint-url>`, `<your-minio-server-url>`, `<your-namespace>`
+- **Comment Style**: Comments above the line they describe, not inline
+- **README vs CLAUDE.md**: README is user-facing, CLAUDE.md is development/architectural context

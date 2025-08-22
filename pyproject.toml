@@ -12,6 +12,7 @@ dependencies = [
     "jupyter-scheduler>=2.11.0",
     "jupyterlab>=4.4.5",
     "kubernetes>=33.1.0",
+    "awscli>=1.27.0",
 ]
 
 [build-system]
