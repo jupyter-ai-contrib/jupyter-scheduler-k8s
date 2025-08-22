@@ -4,12 +4,13 @@ Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jup
 
 ## How It Works
 
-1. Schedule notebook jobs through JupyterLab UI (runs locally)
-2. jupyter-scheduler-k8s sends job to your Kubernetes cluster (local or cloud)
-3. Notebook executes in isolated container with dependencies
-4. Results return to JupyterLab for download
+1. Schedule notebook jobs through JupyterLab UI
+2. Files uploaded to S3 bucket for storage
+3. Kubernetes job downloads files, executes notebook in isolated pod
+4. Results uploaded back to S3, then downloaded to JupyterLab and accessible through the UI
 
 **Key features:**
+- **S3 storage** - files survive Kubernetes cluster or Jupyter Server failures. Supports any S3-compatible storage like AWS S3, MinIO, GCS with S3 API, and so on
 - Parameter injection for notebook customization
 - Multiple output formats (HTML, PDF, etc.)
 - Works with any Kubernetes cluster (Kind, minikube, EKS, GKE, AKS)
@@ -17,12 +18,14 @@ Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jup
 
 ## Requirements
 
-- Kubernetes cluster (Kind, minikube, or cloud provider)
+- Kubernetes cluster (Kind, minikube, or cloud provider)  
+- S3-compatible storage (AWS S3, MinIO, GCS with S3 API, etc.)
 - Python 3.9+
 - jupyter-scheduler>=2.11.0
 
 **For local development:**
 - Finch and Kind (install guides: [Finch](https://github.com/runfinch/finch#installation), [Kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation))
+- S3-compatible storage for testing (see S3 setup guides for local options)
 
 **Connecting to your cluster:**
 - Default: Reads cluster credentials from `~/.kube/config`
@@ -43,12 +46,18 @@ make status
 # Install the package and all dependencies (including jupyterlab and jupyter-scheduler)
 pip install -e .
 
-# Configure environment (as shown by make dev-env output)
-export K8S_IMAGE="jupyter-scheduler-k8s:latest"
-export K8S_IMAGE_PULL_POLICY="Never"
+# Configure S3 storage (required)
+export S3_BUCKET="<your-bucket-name>"
 
-# Launch Jupyter Lab with K8s backend
-jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
+# Configure AWS credentials (required)
+export AWS_ACCESS_KEY_ID="<your-access-key>"
+export AWS_SECRET_ACCESS_KEY="<your-secret-key>"
+
+# Optional: For temporary credentials
+# export AWS_SESSION_TOKEN="<your-session-token>"
+
+# Launch Jupyter Lab with K8s backend (from same terminal with env vars)
+jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
 ```
 
 ### Cloud Deployment
@@ -64,12 +73,17 @@ make build-image
 finch tag jupyter-scheduler-k8s:latest your-registry/jupyter-scheduler-k8s:latest
 finch push your-registry/jupyter-scheduler-k8s:latest
 
-# Configure environment
+# Configure required environment
+export S3_BUCKET="<your-company-notebooks>"
+export AWS_ACCESS_KEY_ID="<your-access-key>"
+export AWS_SECRET_ACCESS_KEY="<your-secret-key>"
+
+# Configure for cloud deployment
 export K8S_IMAGE="your-registry/jupyter-scheduler-k8s:latest"
-export K8S_NAMESPACE="your-namespace"
+export K8S_NAMESPACE="<your-namespace>"
 
 # Launch Jupyter Lab with K8s backend
-jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
+jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
 ```
 
 ## Configuration
@@ -83,11 +97,22 @@ jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.K8sExe
 | `K8S_NAMESPACE` | No | `default` | Kubernetes namespace |
 | `K8S_IMAGE` | No | `jupyter-scheduler-k8s:latest` | Container image to use |
 | `K8S_IMAGE_PULL_POLICY` | No | Auto-detected | `Never` for local clusters, `Always` for cloud |
-| `K8S_STORAGE_SIZE` | No | `100Mi` | PVC size per job |
 | `K8S_EXECUTOR_MEMORY_REQUEST` | No | `512Mi` | Container memory request |
 | `K8S_EXECUTOR_MEMORY_LIMIT` | No | `2Gi` | Container memory limit |
 | `K8S_EXECUTOR_CPU_REQUEST` | No | `500m` | Container CPU request |
 | `K8S_EXECUTOR_CPU_LIMIT` | No | `2000m` | Container CPU limit |
+
+**S3 Storage Configuration** (required):
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `S3_BUCKET` | Yes | - | S3 bucket name for file storage |
+| `S3_ENDPOINT_URL` | No | - | Custom S3 endpoint (for MinIO, GCS S3 API, etc.) |
+
+**AWS Credentials** (when using S3):
+- **IAM roles** (recommended for EC2/EKS): Automatic
+- **Credentials file**: `~/.aws/credentials` 
+- **Environment**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 
 **Container Execution Variables** (set automatically by K8sExecutionManager, or manually for testing):
 
@@ -104,56 +129,40 @@ jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.K8sExe
 ## Testing
 
 **Prerequisites:**
-- **macOS**: `brew install finch kind`
-- **Linux/Windows**: [Finch install guide](https://github.com/runfinch/finch#installation), [Kind install guide](https://kind.sigs.k8s.io/docs/user/quick-start/#installation)
-
-**End-to-end testing:**
-
-1. Setup local K8s environment:
 ```bash
-make dev-env  # Creates Kind cluster, builds and loads image
-
-# Configure environment
-export K8S_IMAGE="jupyter-scheduler-k8s:latest"
-export K8S_IMAGE_PULL_POLICY="Never"
+# macOS
+brew install finch kind
 ```
 
-2. Install the package and dependencies:
-```bash
-pip install -e .
-```
+**Linux/Windows:** See install guides for [Finch](https://github.com/runfinch/finch#installation) and [Kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation)
 
-3. Launch with K8s backend:
+**Quick test:**
 ```bash
-jupyter lab --SchedulerApp.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
-```
+# Setup
+make dev-env && pip install -e .
 
-4. Create and run notebook jobs through the jupyter-scheduler UI (supports parameters and multiple output formats)
+# Configure required environment
+export S3_BUCKET="<your-test-bucket>"
+export AWS_ACCESS_KEY_ID="<your-access-key>"
+export AWS_SECRET_ACCESS_KEY="<your-secret-key>"
 
-5. Cleanup:
-```bash
-make clean  # Remove Kind cluster
+# Launch and test through JupyterLab UI
+jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
+
+# Cleanup
+make clean
 ```
 
 **Test container directly:**
-
 ```bash
-# Basic test with provided notebook (run from repo directory)
+# Basic test with provided notebook
 finch run --rm \
   -e NOTEBOOK_PATH="/workspace/tests/test_notebook.ipynb" \
   -e OUTPUT_PATH="/workspace/output.ipynb" \
   -v "$(pwd):/workspace" \
   jupyter-scheduler-k8s:latest
 
-# Test with parameters - note the single quotes to avoid shell escaping issues
-finch run --rm \
-  -e NOTEBOOK_PATH="/workspace/tests/test_notebook.ipynb" \
-  -e OUTPUT_PATH="/workspace/output_with_params.ipynb" \
-  -e 'PARAMETERS={"test_param":"Hello from K8s"}' \
-  -v "$(pwd):/workspace" \
-  jupyter-scheduler-k8s:latest
-
-# Test with copying input folder (includes all files from notebook directory)
+# Test with data files - copies entire notebook directory
 finch run --rm \
   -e NOTEBOOK_PATH="/workspace/tests/test_with_data.ipynb" \
   -e OUTPUT_PATH="/workspace/output_with_data.ipynb" \
@@ -161,8 +170,6 @@ finch run --rm \
   -v "$(pwd):/workspace" \
   jupyter-scheduler-k8s:latest
 ```
-
-**Note on parameters**: When passing JSON via PARAMETERS environment variable, use single quotes around the entire `KEY=VALUE` pair to avoid shell escaping issues. In production, K8sExecutionManager sets these programmatically, avoiding shell complexity.
 
 ## Development
 
@@ -186,17 +193,18 @@ make status         # Check environment status
 make clean          # Remove cluster and cleanup
 ```
 
+
 ## Implementation Status
 
 ### Working Features ✅
-- Custom `K8sExecutionManager` that extends `jupyter-scheduler.ExecutionManager` and runs notebook jobs in Kubernetes pods using a pre-populated Persistent Volume Claim (PVC) approach for input file handling
+- Custom `K8sExecutionManager` that extends `jupyter-scheduler.ExecutionManager` and runs notebook jobs in Kubernetes pods
 - Parameter injection and multiple output formats
-- PVC-based file handling for any notebook size
+- File handling for any notebook size with proven S3 operations
 - Configurable CPU/memory limits
 - Event-driven job monitoring with Watch API
+- S3 storage: Files persist beyond kubernetes cluster or jupyter server failures using AWS CLI for reliable transfers
 
 ### Planned 🚧
-- s3 / configurable approach for input file handling
 - GPU resource configuration for k8s jobs from UI
 - Kubernetes job stop/deletion from UI
 - Kubernetes-native scheduling from UI
