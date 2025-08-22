@@ -37,23 +37,46 @@ class K8sExecutionManager(ExecutionManager):
         self, job_id: str, root_dir: str, db_url: str, staging_paths: Dict[str, str]
     ):
         super().__init__(job_id, root_dir, db_url, staging_paths)
+        
+        logger.info("🔧 Initializing K8sExecutionManager with environment configuration:")
+        
+        # S3 Configuration (required)
         self.s3_bucket = os.environ.get("S3_BUCKET")
         if not self.s3_bucket:
+            logger.error("❌ S3_BUCKET environment variable not set")
+            logger.error("   Required: export S3_BUCKET=\"your-bucket-name\"")
             raise ValueError("S3_BUCKET environment variable is required")
+        logger.info(f"   ✅ S3_BUCKET: {self.s3_bucket}")
+        
+        # S3 Endpoint (optional)
+        self.s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL")
+        if self.s3_endpoint_url:
+            logger.info(f"   ✅ S3_ENDPOINT_URL: {self.s3_endpoint_url}")
+        else:
+            logger.info("   ℹ️  S3_ENDPOINT_URL: (not set, using AWS S3)")
+            
+        # Kubernetes Configuration
         self.namespace = os.environ.get("K8S_NAMESPACE", "default")
         self.image = os.environ.get("K8S_IMAGE", "jupyter-scheduler-k8s:latest")
-        self.s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL")
+        logger.info(f"   ✅ K8S_NAMESPACE: {self.namespace}")
+        logger.info(f"   ✅ K8S_IMAGE: {self.image}")
+        
+        # Resource Configuration
         self.executor_memory_request = os.environ.get(
             "K8S_EXECUTOR_MEMORY_REQUEST", "512Mi"
         )
         self.executor_memory_limit = os.environ.get("K8S_EXECUTOR_MEMORY_LIMIT", "2Gi")
         self.executor_cpu_request = os.environ.get("K8S_EXECUTOR_CPU_REQUEST", "500m")
         self.executor_cpu_limit = os.environ.get("K8S_EXECUTOR_CPU_LIMIT", "2000m")
+        logger.info(f"   ✅ Memory: {self.executor_memory_request} request, {self.executor_memory_limit} limit")
+        logger.info(f"   ✅ CPU: {self.executor_cpu_request} request, {self.executor_cpu_limit} limit")
 
+        # Image Pull Policy (auto-detected)
         default_pull_policy = self._detect_image_pull_policy()
         self.image_pull_policy = os.environ.get(
             "K8S_IMAGE_PULL_POLICY", default_pull_policy
         )
+        logger.info(f"   ✅ Image Pull Policy: {self.image_pull_policy} ({'manual override' if 'K8S_IMAGE_PULL_POLICY' in os.environ else 'auto-detected'})")
 
         self.k8s_core = None
         self.k8s_batch = None
@@ -98,8 +121,7 @@ class K8sExecutionManager(ExecutionManager):
             JobFeature.delete_job: False,
         }
 
-    @classmethod
-    def validate(cls, input_path: str) -> bool:
+    def validate(self, input_path: str) -> bool:
         with open(input_path, encoding="utf-8") as f:
             nb = nbformat.read(f, as_version=4)
             try:
