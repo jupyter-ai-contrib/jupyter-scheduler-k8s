@@ -10,7 +10,8 @@ Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jup
 4. Results uploaded back to S3, then downloaded to JupyterLab and accessible through the UI
 
 **Key features:**
-- **S3 storage** - files survive Kubernetes cluster or Jupyter Server failures. Supports any S3-compatible storage like AWS S3, MinIO, GCS with S3 API, and so on
+- **K8s database** - store job metadata in Kubernetes Jobs (zero SQL dependencies)
+- **S3 storage** - files survive Kubernetes cluster or Jupyter Server failures
 - Parameter injection for notebook customization
 - Multiple output formats (HTML, PDF, etc.)
 - Works with any Kubernetes cluster (Kind, minikube, EKS, GKE, AKS)
@@ -146,8 +147,11 @@ export S3_BUCKET="<your-test-bucket>"
 export AWS_ACCESS_KEY_ID="<your-access-key>"
 export AWS_SECRET_ACCESS_KEY="<your-secret-key>"
 
-# Launch and test through JupyterLab UI
+# Launch with K8s execution only
 jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
+
+# Launch with K8s database + K8s execution
+jupyter lab --SchedulerApp.db_url="k8s://default" --SchedulerApp.database_manager_class="jupyter_scheduler_k8s.K8sDatabaseManager" --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
 
 # Cleanup
 make clean
@@ -197,12 +201,13 @@ make clean          # Remove cluster and cleanup
 ## Implementation Status
 
 ### Working Features ✅
-- Custom `K8sExecutionManager` that extends `jupyter-scheduler.ExecutionManager` and runs notebook jobs in Kubernetes pods
+- **K8s Database**: `K8sDatabaseManager` stores job metadata in K8s Jobs (zero SQL dependencies)
+- **K8s Execution**: `K8sExecutionManager` runs notebook jobs in Kubernetes pods
 - Parameter injection and multiple output formats
 - File handling for any notebook size with proven S3 operations
 - Configurable CPU/memory limits
 - Event-driven job monitoring with Watch API
-- S3 storage: Files persist beyond kubernetes cluster or jupyter server failures using AWS CLI for reliable transfers
+- S3 storage: Files persist beyond kubernetes cluster or jupyter server failures
 
 ### Planned 🚧
 - GPU resource configuration for k8s jobs from UI

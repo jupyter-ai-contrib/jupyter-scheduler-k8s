@@ -6,7 +6,7 @@ This document contains development notes, architecture decisions, and lessons le
 
 ## Project Structure
 
-- `src/jupyter_scheduler_k8s/` - Main Python package with K8sExecutionManager
+- `src/jupyter_scheduler_k8s/` - Main Python package with K8sExecutionManager and K8sDatabaseManager
 - `image/` - Docker image with Pixi-based Python environment and notebook executor
 - `local-dev/` - Local development configuration (Kind cluster)
 - `Makefile` - Build and development automation with auto-detection
@@ -29,7 +29,7 @@ This document contains development notes, architecture decisions, and lessons le
 
 ## Key Design Principles
 
-1. **Minimal Extension**: Only override ExecutionManager, reuse everything else from jupyter-scheduler
+1. **Minimal Extension**: Only override ExecutionManager and DatabaseManager, reuse everything else from jupyter-scheduler
 2. **Container Simplicity**: Container just executes notebooks, unaware of K8s or scheduler
 3. **No Circular Dependencies**: Container doesn't depend on jupyter-scheduler package
 4. **Staging Compatibility**: Work with jupyter-scheduler's existing file staging mechanism
@@ -55,6 +55,13 @@ This document contains development notes, architecture decisions, and lessons le
 - Supports `PACKAGE_INPUT_FOLDER` for including data files
 
 ### Phase 2: K8s Backend Implementation ✅
+
+#### K8s Database Backend (Production-Ready)
+- **Storage**: K8s Jobs as database records using labels and annotations
+- **SQLAlchemy Interface**: K8sSession and K8sQuery mimic SQLAlchemy patterns
+- **DatabaseManager Plugin**: Clean integration via jupyter-scheduler's Type system
+- **Zero SQL Dependencies**: Complete replacement for SQLite/PostgreSQL
+- **Usage**: `jupyter lab --SchedulerApp.db_url="k8s://default" --SchedulerApp.database_manager_class="jupyter_scheduler_k8s.K8sDatabaseManager"`
 
 ### Pre-Populated PVC Architecture (Production-Ready)
 - **Storage**: PVC (PersistentVolumeClaim) for production-ready file handling
@@ -187,11 +194,12 @@ jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecut
 
 ## Current Implementation Status
 
-### Latest Architecture: S3 Storage (Production Ready ✅)
-1. **Upload inputs** - AWS CLI sync to S3 bucket
-2. **Container execution** - Job downloads from S3, executes notebook, uploads outputs  
-3. **Download outputs** - AWS CLI sync from S3 to staging directory
-4. **Durability** - Files survive cluster failures, can be retrieved later
+### Latest Architecture: K8s Database + S3 Storage (Production Ready ✅)
+1. **Database operations** - Job metadata stored in K8s Jobs using labels/annotations
+2. **Upload inputs** - AWS CLI sync to S3 bucket
+3. **Container execution** - Job downloads from S3, executes notebook, uploads outputs
+4. **Download outputs** - AWS CLI sync from S3 to staging directory
+5. **Durability** - Both metadata and files survive cluster failures
 
 **Key Implementation Details:**
 - **AWS credentials passed at runtime**: K8sExecutionManager passes host AWS credentials to containers via environment variables
