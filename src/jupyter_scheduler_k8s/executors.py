@@ -34,9 +34,9 @@ class K8sExecutionManager(ExecutionManager):
     """Executes Jupyter Scheduler jobs as Kubernetes Jobs."""
 
     def __init__(
-        self, job_id: str, root_dir: str, db_url: str, staging_paths: Dict[str, str]
+        self, job_id: str, root_dir: str, db_url: str, staging_paths: Dict[str, str], database_manager_class
     ):
-        super().__init__(job_id, root_dir, db_url, staging_paths)
+        super().__init__(job_id, root_dir, db_url, staging_paths, database_manager_class)
         
         logger.info("🔧 Initializing K8sExecutionManager with environment configuration:")
         
@@ -46,20 +46,20 @@ class K8sExecutionManager(ExecutionManager):
             logger.error("❌ S3_BUCKET environment variable not set")
             logger.error("   Required: export S3_BUCKET=\"your-bucket-name\"")
             raise ValueError("S3_BUCKET environment variable is required")
-        logger.info(f"   ✅ S3_BUCKET: {self.s3_bucket}")
+        logger.info(f"   S3_BUCKET: {self.s3_bucket}")
         
         # S3 Endpoint (optional)
         self.s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL")
         if self.s3_endpoint_url:
-            logger.info(f"   ✅ S3_ENDPOINT_URL: {self.s3_endpoint_url}")
+            logger.info(f"   S3_ENDPOINT_URL: {self.s3_endpoint_url}")
         else:
-            logger.info("   ℹ️  S3_ENDPOINT_URL: (not set, using AWS S3)")
+            logger.info("   S3_ENDPOINT_URL: (not set, using AWS S3)")
             
         # Kubernetes Configuration
         self.namespace = os.environ.get("K8S_NAMESPACE", "default")
         self.image = os.environ.get("K8S_IMAGE", "jupyter-scheduler-k8s:latest")
-        logger.info(f"   ✅ K8S_NAMESPACE: {self.namespace}")
-        logger.info(f"   ✅ K8S_IMAGE: {self.image}")
+        logger.info(f"   K8S_NAMESPACE: {self.namespace}")
+        logger.info(f"   K8S_IMAGE: {self.image}")
         
         # Resource Configuration
         self.executor_memory_request = os.environ.get(
@@ -68,18 +68,27 @@ class K8sExecutionManager(ExecutionManager):
         self.executor_memory_limit = os.environ.get("K8S_EXECUTOR_MEMORY_LIMIT", "2Gi")
         self.executor_cpu_request = os.environ.get("K8S_EXECUTOR_CPU_REQUEST", "500m")
         self.executor_cpu_limit = os.environ.get("K8S_EXECUTOR_CPU_LIMIT", "2000m")
-        logger.info(f"   ✅ Memory: {self.executor_memory_request} request, {self.executor_memory_limit} limit")
-        logger.info(f"   ✅ CPU: {self.executor_cpu_request} request, {self.executor_cpu_limit} limit")
+        logger.info(f"   Memory: {self.executor_memory_request} request, {self.executor_memory_limit} limit")
+        logger.info(f"   CPU: {self.executor_cpu_request} request, {self.executor_cpu_limit} limit")
 
         # Image Pull Policy (auto-detected)
         default_pull_policy = self._detect_image_pull_policy()
         self.image_pull_policy = os.environ.get(
             "K8S_IMAGE_PULL_POLICY", default_pull_policy
         )
-        logger.info(f"   ✅ Image Pull Policy: {self.image_pull_policy} ({'manual override' if 'K8S_IMAGE_PULL_POLICY' in os.environ else 'auto-detected'})")
+        logger.info(f"   Image Pull Policy: {self.image_pull_policy} ({'manual override' if 'K8S_IMAGE_PULL_POLICY' in os.environ else 'auto-detected'})")
 
         self.k8s_core = None
         self.k8s_batch = None
+    
+    def _create_database_manager(self, database_manager_class):
+        """Create database manager, handling both string and class types."""
+        if isinstance(database_manager_class, str):
+            # Use parent's implementation for string type
+            return super()._create_database_manager(database_manager_class)
+        else:
+            # Handle class object directly
+            return database_manager_class()
 
     def _detect_image_pull_policy(self) -> str:
         """Auto-detect appropriate image pull policy based on K8s context."""
@@ -208,8 +217,7 @@ class K8sExecutionManager(ExecutionManager):
             self._download_from_s3(s3_output_prefix)
 
         finally:
-            logger.info("Cleaning up K8s job")
-            self._cleanup_job(job_name)
+            logger.info(f"🗃️  Execution job '{job_name}' preserved as database record")
 
     def _wait_for_job_completion(self, job_name: str, timeout: int = 600):
         """Wait for job to complete using Watch API."""
@@ -298,7 +306,9 @@ class K8sExecutionManager(ExecutionManager):
 
     def _download_from_s3(self, s3_output_prefix: str):
         """Download output files from S3 to staging directory using AWS CLI."""
-        staging_dir = Path(self.staging_paths["ipynb"]).parent
+        # Use available staging path to determine directory
+        staging_path = self.staging_paths.get("ipynb") or self.staging_paths.get("input")
+        staging_dir = Path(staging_path).parent
         
         logger.info(f"📥 Downloading files from S3 to {staging_dir}...")
         logger.info(f"    Source: {s3_output_prefix}")
@@ -333,7 +343,7 @@ class K8sExecutionManager(ExecutionManager):
             ),
             client.V1EnvVar(
                 name="OUTPUT_PATH",
-                value=f"/tmp/outputs/{Path(self.staging_paths['ipynb']).name}",
+                value=f"/tmp/outputs/{Path(self.staging_paths.get('ipynb') or self.staging_paths.get('input')).name}",
             ),
             client.V1EnvVar(
                 name="PARAMETERS", value=json.dumps(self.model.parameters or {})
@@ -398,22 +408,45 @@ class K8sExecutionManager(ExecutionManager):
             backoff_limit=0,
         )
 
+        # Create labels for database-style querying
+        labels = {
+            "app.kubernetes.io/managed-by": "jupyter-scheduler-k8s",
+            "jupyter-scheduler.io/job-id": self._sanitize(self.job_id),
+            "jupyter-scheduler.io/status": self._sanitize(self.model.status or "pending"),
+        }
+        
+        if hasattr(self.model, 'name') and self.model.name:
+            labels["jupyter-scheduler.io/name"] = self._sanitize(self.model.name)
+        
+        # Store complete job data in annotation for database queries
+        job_data = {
+            "job_id": self.job_id,
+            "name": getattr(self.model, 'name', None),
+            "status": getattr(self.model, 'status', 'pending'),
+            "input_filename": getattr(self.model, 'input_filename', None),
+            "runtime_environment_name": getattr(self.model, 'runtime_environment_name', None),
+            "parameters": getattr(self.model, 'parameters', {}),
+            "output_formats": getattr(self.model, 'output_formats', []),
+            "create_time": getattr(self.model, 'create_time', None),
+            "update_time": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        }
+        
+        annotations = {
+            "jupyter-scheduler.io/job-data": json.dumps(job_data)
+        }
+        
         k8s_job = client.V1Job(
             api_version="batch/v1",
             kind="Job",
-            metadata=client.V1ObjectMeta(name=job_name),
+            metadata=client.V1ObjectMeta(name=job_name, labels=labels, annotations=annotations),
             spec=job_spec,
         )
 
         return k8s_job
+    
+    def _sanitize(self, value: str) -> str:
+        """Sanitize value for K8s labels."""
+        value = str(value).lower()
+        value = ''.join(c if c.isalnum() or c in '-_.' else '-' for c in value)
+        return value.strip('-_.')[:63] or "none"
 
-    def _cleanup_job(self, job_name: str):
-        """Clean up K8s job (S3 mode - no PVC to clean)."""
-        try:
-            self.k8s_batch.delete_namespaced_job(
-                name=job_name, namespace=self.namespace, propagation_policy="Background"
-            )
-            logger.info(f"Cleaned up job {job_name}")
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning(f"Failed to delete job {job_name}: {e}")

@@ -6,7 +6,6 @@ from typing import Any, Dict
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
-from jupyter_scheduler.utils import get_utc_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -65,108 +64,11 @@ class K8sSession:
         
     def commit(self):
         """Execute buffered operations."""
-        if not self._pending_operations:
-            return
-            
-        try:
-            for op_type, obj in self._pending_operations:
-                if op_type == 'create':
-                    job_data = self._job_to_dict(obj)
-                    self._create_k8s_job(job_data)
-            self._pending_operations.clear()
-        except ApiException as e:
-            self.rollback()
-            logger.error(f"❌ K8s API error during commit: {e}")
-            raise RuntimeError(f"Failed to create K8s job: {e.reason}")
-        except Exception as e:
-            self.rollback()
-            logger.error(f"❌ Unexpected error during commit: {e}")
-            raise
+        self._pending_operations.clear()
     
     def rollback(self):
         """Clear pending operations."""
-        # K8s doesn't support transactions, only clear pending operations
         self._pending_operations.clear()
-    
-    def _job_to_dict(self, job) -> Dict[str, Any]:
-        """Convert Job model to dict."""
-        return {
-            "job_id": job.job_id,
-            "name": job.name,
-            "status": job.status,
-            "input_filename": job.input_filename,
-            "runtime_environment_name": job.runtime_environment_name,
-            "parameters": job.parameters or {},
-            "output_formats": job.output_formats or [],
-            "create_time": job.create_time or get_utc_timestamp(),
-            "update_time": get_utc_timestamp(),
-        }
-    
-    def _create_k8s_job(self, job_data: Dict):
-        """Create K8s Job for metadata storage."""
-        # Creates minimal busybox job that stores metadata in labels/annotations
-        job_id = job_data['job_id']
-        job_name = f"js-{job_id[:8]}-{job_id[-4:]}"
-        
-        # Busybox container runs once then exits, leaving metadata intact
-        job_spec = client.V1JobSpec(
-            template=client.V1PodTemplateSpec(
-                spec=client.V1PodSpec(
-                    restart_policy="Never",
-                    containers=[client.V1Container(
-                        name="database-record",
-                        image="busybox:latest",
-                        command=["echo", f"database-record-{job_data['job_id']}"],
-                        resources=client.V1ResourceRequirements(
-                            requests={"cpu": "1m", "memory": "1Mi"}
-                        )
-                    )]
-                )
-            ),
-            backoff_limit=0
-        )
-        
-        # Labels enable fast K8s label selector queries
-        labels = {
-            "app.kubernetes.io/managed-by": "jupyter-scheduler-k8s",
-            "jupyter-scheduler.io/job-id": self._sanitize(job_data["job_id"]),
-            "jupyter-scheduler.io/status": self._sanitize(job_data["status"]),
-        }
-        
-        # Differentiate Job from JobDefinition using schedule presence
-        if job_data.get("schedule"):
-            labels["jupyter-scheduler.io/has-schedule"] = "true"
-        else:
-            labels["jupyter-scheduler.io/has-schedule"] = "false"
-        
-        if job_data.get("name"):
-            labels["jupyter-scheduler.io/name"] = self._sanitize(job_data["name"])
-        
-        # Store complete job data in annotation for retrieval
-        annotations = {
-            "jupyter-scheduler.io/job-data": json.dumps(job_data)
-        }
-        
-        k8s_job = client.V1Job(
-            api_version="batch/v1",
-            kind="Job",
-            metadata=client.V1ObjectMeta(
-                name=job_name,
-                labels=labels,
-                annotations=annotations
-            ),
-            spec=job_spec
-        )
-        
-        try:
-            self.k8s_batch.create_namespaced_job(namespace=self.namespace, body=k8s_job)
-            logger.debug(f"✅ Created K8s job: {job_name}")
-        except ApiException as e:
-            if e.status == 409:
-                logger.warning(f"⚠️  K8s job {job_name} already exists")
-            else:
-                logger.error(f"❌ Failed to create K8s job {job_name}: {e}")
-                raise
     
     def _sanitize(self, value: str) -> str:
         """Sanitize value for K8s labels."""
@@ -201,7 +103,7 @@ class K8sQuery:
             value = getattr(condition.right, 'value', condition.right)
             
             if field_name in ['job_id', 'status', 'name']:
-                self._label_filters[f'jupyter-scheduler.io/{field_name.replace("_", "-")}'] = self.session._sanitize(str(value))
+                self._label_filters[f'jupyter-scheduler.io/{field_name.replace("_", "-")}'] = self._sanitize(str(value))
             else:
                 # Complex fields stored in annotations, filtered post-query
                 self._filters[field_name] = value
@@ -210,9 +112,15 @@ class K8sQuery:
             field_name = condition.left.name
             if field_name == 'status':
                 # Multiple values require post-query filtering
-                self._filters['status_in'] = [self.session._sanitize(str(v)) for v in condition.right.value]
+                self._filters['status_in'] = [self._sanitize(str(v)) for v in condition.right.value]
         
         return self
+    
+    def _sanitize(self, value: str) -> str:
+        """Sanitize value for K8s labels."""
+        value = str(value).lower()
+        value = ''.join(c if c.isalnum() or c in '-_.' else '-' for c in value)
+        return value.strip('-_.')[:63] or "none"
         
     def update(self, values: Dict):
         """Update matching jobs."""

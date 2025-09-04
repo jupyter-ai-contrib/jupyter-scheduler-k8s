@@ -6,16 +6,15 @@ Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jup
 
 1. Schedule notebook jobs through JupyterLab UI
 2. Files uploaded to S3 bucket for storage
-3. Kubernetes job downloads files, executes notebook in isolated pod
+3. Kubernetes execution job downloads files, executes notebook in isolated pod
 4. Results uploaded back to S3, then downloaded to JupyterLab and accessible through the UI
+5. **Execution job persists as database record** - job history and debugging info preserved
 
 **Key features:**
-- **K8s database** - store job metadata in Kubernetes Jobs (zero SQL dependencies)
+- **Jobs-as-records** - execution Jobs serve as both workload AND database records (zero SQL dependencies)
+- **Job history** - execution context, logs, and resource usage preserved  
 - **S3 storage** - files survive Kubernetes cluster or Jupyter Server failures
-- Parameter injection for notebook customization
-- Multiple output formats (HTML, PDF, etc.)
 - Works with any Kubernetes cluster (Kind, minikube, EKS, GKE, AKS)
-- Configurable resource limits (CPU/memory)
 
 ## Requirements
 
@@ -201,16 +200,19 @@ make clean          # Remove cluster and cleanup
 ## Implementation Status
 
 ### Working Features ✅
-- **K8s Database**: `K8sDatabaseManager` stores job metadata in K8s Jobs (zero SQL dependencies)
-- **K8s Execution**: `K8sExecutionManager` runs notebook jobs in Kubernetes pods
-- Parameter injection and multiple output formats
-- File handling for any notebook size with proven S3 operations
-- Configurable CPU/memory limits
-- Event-driven job monitoring with Watch API
-- S3 storage: Files persist beyond kubernetes cluster or jupyter server failures
+- **Jobs-as-Records Database**: `K8sDatabaseManager` stores job metadata in execution Jobs (zero SQL dependencies)
+- **K8s Execution**: `K8sExecutionManager` runs notebook jobs in Kubernetes pods with context preservation
+- **S3 Storage**: Files persist beyond Kubernetes cluster or Jupyter Server failures
+- **Memory Management**: Configurable CPU/memory limits and requests
+- **Event-driven Monitoring**: Watch API for real-time job status updates
+- **Parameter Injection**: Dynamic notebook customization
+- **Multiple Output Formats**: HTML, PDF, and other formats via nbconvert
+- **File Handling**: Support for any notebook size with S3 operations
 
 ### Planned 🚧
-- GPU resource configuration for k8s jobs from UI
-- Kubernetes job stop/deletion from UI
-- Kubernetes-native scheduling from UI
-- PyPI package publishing
+- **Custom Resource Definitions (CRDs)**: Optimized metadata storage for large-scale deployments
+- **Job Archival**: Automated cleanup and archival of old execution Jobs
+- **GPU Resource Configuration**: GPU allocation for ML workloads from UI
+- **Job Management**: Stop/deletion of running Kubernetes jobs from UI
+- **K8s-native Scheduling**: CronJobs integration from UI
+- **PyPI Package Publishing**: Official package distribution

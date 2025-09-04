@@ -130,6 +130,8 @@ load-image: build-image
 
 .PHONY: dev-env
 dev-env: load-image
+	@echo "Setting kubectl context for Kind cluster..."
+	@kind export kubeconfig --name $(CLUSTER_NAME)
 	@echo ""
 	@echo "🚀 Development environment ready!"
 	@echo ""
@@ -204,4 +206,21 @@ status:
 		fi; \
 	else \
 		echo "❌ AWS CLI not installed"; \
+	fi
+	@echo ""
+	@echo "AWS Credentials (for container access):"
+	@if [ -n "$$AWS_ACCESS_KEY_ID" ]; then \
+		echo "✅ AWS_ACCESS_KEY_ID set"; \
+	else \
+		echo "❌ AWS_ACCESS_KEY_ID not set (required for container S3 access)"; \
+	fi
+	@if [ -n "$$AWS_SECRET_ACCESS_KEY" ]; then \
+		echo "✅ AWS_SECRET_ACCESS_KEY set"; \
+	else \
+		echo "❌ AWS_SECRET_ACCESS_KEY not set (required for container S3 access)"; \
+	fi
+	@if [ -n "$$AWS_SESSION_TOKEN" ]; then \
+		echo "✅ AWS_SESSION_TOKEN set (temporary credentials)"; \
+	else \
+		echo "ℹ️  AWS_SESSION_TOKEN not set (not required for permanent credentials)"; \
 	fi
