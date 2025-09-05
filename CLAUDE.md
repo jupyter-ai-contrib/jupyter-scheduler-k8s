@@ -7,8 +7,12 @@ This document contains development notes, architecture decisions, and lessons le
 ## Project Structure
 
 - `src/jupyter_scheduler_k8s/` - Main Python package with K8sExecutionManager and K8sDatabaseManager
+- `src/advanced-options.tsx` - React component for resource configuration UI
+- `src/index.ts` - JupyterLab plugin registration
 - `image/` - Docker image with Pixi-based Python environment and notebook executor
 - `local-dev/` - Local development configuration (Kind cluster)
+- `package.json` - Frontend build configuration
+- `tsconfig.json` - TypeScript configuration
 - `Makefile` - Build and development automation with auto-detection
 
 ## Dependencies
@@ -52,8 +56,9 @@ This document contains development notes, architecture decisions, and lessons le
 - **Database**: Execution Jobs (`nb-job-*`) serve as permanent records with labels/annotations
 - **File Storage**: S3 for durability across cluster failures
 - **Monitoring**: Watch API for real-time job status updates  
-- **Resource Management**: Configurable CPU/memory limits
+- **Resource Management**: User-configurable CPU/memory/GPU resources via UI
 - **Platform Support**: Works with any K8s cluster (Kind, minikube, cloud providers)
+- **Frontend Extension**: JupyterLab extension for resource configuration UI
 
 ### Development Environment ✅  
 - **Local Setup**: Kind + Finch for development
@@ -99,12 +104,34 @@ jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecut
 
 **Critical:** AWS credentials must be set in the same terminal session where you launch Jupyter Lab. The system passes these credentials to Kubernetes containers for S3 access.
 
+### GPU and Resource Management ✅ 
+
+**UI Extension**: JupyterLab plugin that extends jupyter-scheduler's AdvancedOptions
+- **Resource Profiles**: Preset configurations (0.5 CPU/1Gi Memory → 8 CPU/16Gi Memory + GPU variants)
+- **Custom Resources**: Direct input fields for CPU, memory, GPU specifications  
+- **Optional Configuration**: Default uses cluster administrator settings (no resource limits)
+- **Platform Engineering Pattern**: Follows industry best practices from Kubeflow, SageMaker, Databricks
+
+**Backend Processing**:
+- **K8sExecutionManager**: Extracts resource specifications from job model
+- **Resource Application**: Only applies user-specified resources, respects cluster defaults otherwise
+- **GPU Support**: NVIDIA GPU resource allocation (`nvidia.com/gpu`)
+- **Validation**: Minimal validation (negative GPU prevention), lets K8s handle format validation
+
+**Resource Configuration Flow**:
+1. User selects resource profile or custom values in jupyter-scheduler UI
+2. Frontend passes resource specifications to jupyter-scheduler backend
+3. K8sExecutionManager applies resources to container specification 
+4. Kubernetes scheduler places job based on resource requirements
+5. Resource configuration stored in job annotations for tracking
+
 ### Future Development Roadmap
-- **GPU Support**: Resource configuration from UI for ML workloads
 - **Job Management**: Stop/delete running K8s jobs from UI (`stop_job`, `delete_job` methods)
 - **CRD Migration**: Custom Resource Definitions for optimized metadata storage
 - **Job Archival**: Automated cleanup of old execution Jobs
 - **K8s-native Scheduling**: CronJobs integration from UI
+- **Usage Analytics**: Resource utilization tracking and recommendations
+- **Cluster Integration**: Dynamic resource profiles based on cluster capabilities
 - **PyPI Distribution**: Official package publishing
 
 

@@ -14,6 +14,7 @@ Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jup
 - **Jobs-as-records** - execution Jobs serve as both workload AND database records (zero SQL dependencies)
 - **Job history** - execution context, logs, and resource usage preserved  
 - **S3 storage** - files survive Kubernetes cluster or Jupyter Server failures
+- **Resource configuration** - configure CPU, memory, and GPU resources through JupyterLab UI
 - Works with any Kubernetes cluster (Kind, minikube, EKS, GKE, AKS)
 
 ## Requirements
@@ -204,6 +205,9 @@ make clean          # Remove cluster and cleanup
 - **K8s Execution**: `K8sExecutionManager` runs notebook jobs in Kubernetes pods with context preservation
 - **S3 Storage**: Files persist beyond Kubernetes cluster or Jupyter Server failures
 - **Memory Management**: Configurable CPU/memory limits and requests
+- **GPU Support**: Configure GPU allocation for ML workloads through UI
+- **Resource Profiles**: Preset CPU/memory/GPU configurations with custom options
+- **Platform Engineering UX**: Optional resource specification following industry best practices
 - **Event-driven Monitoring**: Watch API for real-time job status updates
 - **Parameter Injection**: Dynamic notebook customization
 - **Multiple Output Formats**: HTML, PDF, and other formats via nbconvert
@@ -212,7 +216,7 @@ make clean          # Remove cluster and cleanup
 ### Planned 🚧
 - **Custom Resource Definitions (CRDs)**: Optimized metadata storage for large-scale deployments
 - **Job Archival**: Automated cleanup and archival of old execution Jobs
-- **GPU Resource Configuration**: GPU allocation for ML workloads from UI
-- **Job Management**: Stop/deletion of running Kubernetes jobs from UI
+- **Job Management**: Stop/deletion of running Kubernetes jobs from UI  
 - **K8s-native Scheduling**: CronJobs integration from UI
+- **Usage Analytics**: Resource utilization tracking and recommendations
 - **PyPI Package Publishing**: Official package distribution

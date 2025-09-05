@@ -40,7 +40,6 @@ class K8sExecutionManager(ExecutionManager):
         
         logger.info("🔧 Initializing K8sExecutionManager with environment configuration:")
         
-        # S3 Configuration (required)
         self.s3_bucket = os.environ.get("S3_BUCKET")
         if not self.s3_bucket:
             logger.error("❌ S3_BUCKET environment variable not set")
@@ -48,20 +47,17 @@ class K8sExecutionManager(ExecutionManager):
             raise ValueError("S3_BUCKET environment variable is required")
         logger.info(f"   S3_BUCKET: {self.s3_bucket}")
         
-        # S3 Endpoint (optional)
         self.s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL")
         if self.s3_endpoint_url:
             logger.info(f"   S3_ENDPOINT_URL: {self.s3_endpoint_url}")
         else:
             logger.info("   S3_ENDPOINT_URL: (not set, using AWS S3)")
             
-        # Kubernetes Configuration
         self.namespace = os.environ.get("K8S_NAMESPACE", "default")
         self.image = os.environ.get("K8S_IMAGE", "jupyter-scheduler-k8s:latest")
         logger.info(f"   K8S_NAMESPACE: {self.namespace}")
         logger.info(f"   K8S_IMAGE: {self.image}")
         
-        # Resource Configuration
         self.executor_memory_request = os.environ.get(
             "K8S_EXECUTOR_MEMORY_REQUEST", "512Mi"
         )
@@ -71,7 +67,7 @@ class K8sExecutionManager(ExecutionManager):
         logger.info(f"   Memory: {self.executor_memory_request} request, {self.executor_memory_limit} limit")
         logger.info(f"   CPU: {self.executor_cpu_request} request, {self.executor_cpu_limit} limit")
 
-        # Image Pull Policy (auto-detected)
+        # Auto-detect pull policy based on cluster type
         default_pull_policy = self._detect_image_pull_policy()
         self.image_pull_policy = os.environ.get(
             "K8S_IMAGE_PULL_POLICY", default_pull_policy
@@ -381,22 +377,60 @@ class K8sExecutionManager(ExecutionManager):
         else:
             logger.warning("    ⚠️  No AWS credentials found in environment - container may fail")
 
-        main_container = client.V1Container(
-            name="notebook-executor",
-            image=self.image,
-            image_pull_policy=self.image_pull_policy,
-            env=env_vars,
-            resources=client.V1ResourceRequirements(
-                requests={
-                    "memory": self.executor_memory_request,
-                    "cpu": self.executor_cpu_request,
-                },
-                limits={
-                    "memory": self.executor_memory_limit,
-                    "cpu": self.executor_cpu_limit,
-                },
-            ),
-        )
+        k8s_cpu = getattr(self.model, 'k8s_cpu', None)
+        k8s_memory = getattr(self.model, 'k8s_memory', None)
+        k8s_gpu = getattr(self.model, 'k8s_gpu', 0)
+        try:
+            k8s_gpu = int(k8s_gpu) if k8s_gpu else 0
+            if k8s_gpu < 0:
+                logger.warning(f"    ⚠️  GPU count cannot be negative, using 0")
+                k8s_gpu = 0
+        except (ValueError, TypeError):
+            logger.warning(f"    ⚠️  Invalid GPU value '{k8s_gpu}', using 0")
+            k8s_gpu = 0
+        
+        resource_limits = {}
+        resource_requests = {}
+        
+        if k8s_cpu:
+            resource_limits["cpu"] = k8s_cpu
+            resource_requests["cpu"] = k8s_cpu
+            
+        if k8s_memory:
+            resource_limits["memory"] = k8s_memory
+            resource_requests["memory"] = k8s_memory
+        
+        has_gpu = k8s_gpu and int(k8s_gpu) > 0
+        if has_gpu:
+            resource_limits["nvidia.com/gpu"] = str(k8s_gpu)
+        
+        if resource_limits or resource_requests:
+            logger.info(f"    Resource configuration:")
+            if k8s_cpu:
+                logger.info(f"       CPU: {k8s_cpu}")
+            if k8s_memory:
+                logger.info(f"       Memory: {k8s_memory}")
+            if has_gpu:
+                logger.info(f"       GPU: {k8s_gpu}")
+        else:
+            logger.info(f"    Resource configuration: Using cluster defaults")
+        
+        # Build container spec
+        container_spec = {
+            "name": "notebook-executor",
+            "image": self.image,
+            "image_pull_policy": self.image_pull_policy,
+            "env": env_vars,
+        }
+        
+        # Only add resources if any were specified
+        if resource_limits or resource_requests:
+            container_spec["resources"] = client.V1ResourceRequirements(
+                requests=resource_requests if resource_requests else None,
+                limits=resource_limits if resource_limits else None,
+            )
+        
+        main_container = client.V1Container(**container_spec)
 
         pod_spec = client.V1PodSpec(restart_policy="Never", containers=[main_container])
 
@@ -429,6 +463,10 @@ class K8sExecutionManager(ExecutionManager):
             "output_formats": getattr(self.model, 'output_formats', []),
             "create_time": getattr(self.model, 'create_time', None),
             "update_time": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            "k8s_resource_profile": getattr(self.model, 'k8s_resource_profile', ''),
+            "k8s_cpu": k8s_cpu,
+            "k8s_memory": k8s_memory,
+            "k8s_gpu": k8s_gpu,
         }
         
         annotations = {
