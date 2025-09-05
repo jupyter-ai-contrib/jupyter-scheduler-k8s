@@ -23,49 +23,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def download_from_s3(s3_prefix, local_dir):
-    """Download files from S3 to local directory."""
-    logger.info(f"Downloading from {s3_prefix} to {local_dir}")
-    
-    # Create local directory if it doesn't exist
-    Path(local_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Use AWS CLI to sync from S3
-    cmd = ['aws', 's3', 'sync', s3_prefix, local_dir, '--quiet']
-    
-    # Add endpoint URL if specified (for S3-compatible storage like MinIO)
-    endpoint_url = os.environ.get('S3_ENDPOINT_URL')
-    if endpoint_url:
-        cmd.extend(['--endpoint-url', endpoint_url])
-    
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"S3 download failed: {result.stderr}")
-        sys.exit(1)
-    
-    logger.info("S3 download completed")
-
-
-def upload_to_s3(local_dir, s3_prefix):
-    """Upload files from local directory to S3."""
-    logger.info(f"Uploading from {local_dir} to {s3_prefix}")
-    
-    # Use AWS CLI to sync to S3
-    cmd = ['aws', 's3', 'sync', local_dir, s3_prefix, '--quiet']
-    
-    # Add endpoint URL if specified
-    endpoint_url = os.environ.get('S3_ENDPOINT_URL')
-    if endpoint_url:
-        cmd.extend(['--endpoint-url', endpoint_url])
-    
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"S3 upload failed: {result.stderr}")
-        sys.exit(1)
-    
-    logger.info("S3 upload completed")
-
-
 def main():
     """Execute a notebook based on environment variables."""
     # S3 configuration (optional)
@@ -145,7 +102,6 @@ def main():
     
     generate_output_formats(nb, output_path, output_formats)
     
-    # If S3 is configured, upload outputs
     if s3_output_prefix:
         logger.info("S3 mode: uploading outputs to S3")
         upload_to_s3(local_output_dir, s3_output_prefix)
@@ -247,6 +203,49 @@ def generate_output_formats(nb, output_path, requested_formats):
             
         except Exception as e:
             logger.warning(f"Failed to generate {output_format.upper()} output: {e}")
+
+
+def download_from_s3(s3_prefix, local_dir):
+    """Download files from S3 to local directory."""
+    logger.info(f"Downloading from {s3_prefix} to {local_dir}")
+    
+    # Create local directory if it doesn't exist
+    Path(local_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Use AWS CLI to sync from S3
+    cmd = ['aws', 's3', 'sync', s3_prefix, local_dir, '--quiet']
+    
+    # Add endpoint URL if specified (for S3-compatible storage like MinIO)
+    endpoint_url = os.environ.get('S3_ENDPOINT_URL')
+    if endpoint_url:
+        cmd.extend(['--endpoint-url', endpoint_url])
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"S3 download failed: {result.stderr}")
+        sys.exit(1)
+    
+    logger.info("S3 download completed")
+
+
+def upload_to_s3(local_dir, s3_prefix):
+    """Upload files from local directory to S3."""
+    logger.info(f"Uploading from {local_dir} to {s3_prefix}")
+    
+    # Use AWS CLI to sync to S3
+    cmd = ['aws', 's3', 'sync', local_dir, s3_prefix, '--quiet']
+    
+    # Add endpoint URL if specified
+    endpoint_url = os.environ.get('S3_ENDPOINT_URL')
+    if endpoint_url:
+        cmd.extend(['--endpoint-url', endpoint_url])
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"S3 upload failed: {result.stderr}")
+        sys.exit(1)
+    
+    logger.info("S3 upload completed")
 
 if __name__ == "__main__":
     main()

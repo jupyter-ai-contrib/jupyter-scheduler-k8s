@@ -208,3 +208,22 @@ __marimo__/
 
 .kubeconfig
 .image-built
+
+# Node.js and JupyterLab specific
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.tsbuildinfo
+.yarn/
+
+# JupyterLab extension build artifacts
+lib/
+jupyter_scheduler_k8s/labextension/
+
+# JupyterLab development
+.jupyter/
+.local/share/jupyter/
+
+# TypeScript/JavaScript build files
+*.js.map
