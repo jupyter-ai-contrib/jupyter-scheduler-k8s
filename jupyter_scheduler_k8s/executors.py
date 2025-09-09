@@ -377,9 +377,11 @@ class K8sExecutionManager(ExecutionManager):
         else:
             logger.warning("    ⚠️  No AWS credentials found in environment - container may fail")
 
-        k8s_cpu = getattr(self.model, 'k8s_cpu', None)
-        k8s_memory = getattr(self.model, 'k8s_memory', None)
-        k8s_gpu = getattr(self.model, 'k8s_gpu', 0)
+        # Extract K8s resources from runtime environment parameters
+        runtime_params = getattr(self.model, 'runtime_environment_parameters', {}) or {}
+        k8s_cpu = runtime_params.get('k8s_cpu')
+        k8s_memory = runtime_params.get('k8s_memory')
+        k8s_gpu = runtime_params.get('k8s_gpu', 0)
         try:
             k8s_gpu = int(k8s_gpu) if k8s_gpu else 0
             if k8s_gpu < 0:

@@ -1,419 +1,152 @@
-import React, { ChangeEvent } from 'react';
-
+import React, { useState, useEffect } from 'react';
 import {
-  FormControl,
-  FormLabel,
-  InputLabel,
-  MenuItem,
-  Select,
-  SelectChangeEvent,
+  TextField,
   Stack,
-  TextField
+  Typography,
+  Box,
+  Alert
 } from '@mui/material';
-
-// Local type definitions based on jupyter-scheduler interfaces
-enum JobsView {
-  CreateForm = 1,
-  JobDetail,
-  JobDefinitionDetail
-}
-
-type ErrorsType = { [key: string]: string };
-
-interface IAdvancedOptionsProps {
-  jobsView: JobsView;
-  model: any;  // Using any since we can't import the exact types
-  handleModelChange: (model: any) => void;
-  errors: ErrorsType;
-  handleErrorsChange: (errors: ErrorsType) => void;
-}
-
-const RESOURCE_PROFILES: Record<string, {label: string, cpu: string, memory: string, gpu: number}> = {
-  '': {
-    label: 'Default (cluster defaults)',
-    cpu: '',
-    memory: '',
-    gpu: 0
-  },
-  'cpu-0.5-mem-1': {
-    label: '0.5 CPU, 1Gi Memory',
-    cpu: '500m',
-    memory: '1Gi',
-    gpu: 0
-  },
-  'cpu-1-mem-2': {
-    label: '1 CPU, 2Gi Memory',
-    cpu: '1',
-    memory: '2Gi',
-    gpu: 0
-  },
-  'cpu-2-mem-4': {
-    label: '2 CPU, 4Gi Memory',
-    cpu: '2',
-    memory: '4Gi',
-    gpu: 0
-  },
-  'cpu-4-mem-8': {
-    label: '4 CPU, 8Gi Memory',
-    cpu: '4',
-    memory: '8Gi',
-    gpu: 0
-  },
-  'cpu-8-mem-16': {
-    label: '8 CPU, 16Gi Memory',
-    cpu: '8',
-    memory: '16Gi',
-    gpu: 0
-  },
-  'gpu-1-cpu-2-mem-4': {
-    label: '1 GPU, 2 CPU, 4Gi Memory',
-    cpu: '2',
-    memory: '4Gi',
-    gpu: 1
-  },
-  'gpu-1-cpu-4-mem-8': {
-    label: '1 GPU, 4 CPU, 8Gi Memory',
-    cpu: '4',
-    memory: '8Gi',
-    gpu: 1
-  },
-  'gpu-2-cpu-8-mem-16': {
-    label: '2 GPU, 8 CPU, 16Gi Memory',
-    cpu: '8',
-    memory: '16Gi',
-    gpu: 2
-  },
-  custom: {
-    label: 'Custom',
-    cpu: '',
-    memory: '',
-    gpu: 0
-  }
-};
+import { Scheduler } from '@jupyterlab/scheduler';
+import { JobsView } from '@jupyterlab/scheduler';
 
 const K8sAdvancedOptions = (
-  props: IAdvancedOptionsProps
+  props: Scheduler.IAdvancedOptionsProps
 ): JSX.Element => {
-  const formPrefix = 'jp-create-job-k8s-advanced-';
-
-  const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
-    if (props.jobsView !== JobsView.CreateForm) {
-      return;
-    }
-
-    props.handleModelChange({
-      ...props.model,
-      [e.target.name]: e.target.value
-    });
-  };
-
-  const handleSelectChange = (e: SelectChangeEvent<string>) => {
-    if (props.jobsView !== JobsView.CreateForm) {
-      return;
-    }
-
-    const profile = e.target.value;
-    if (profile === '') {
-      props.handleModelChange({
-        ...props.model,
-        k8s_resource_profile: '',
-        k8s_cpu: undefined,
-        k8s_memory: undefined,
-        k8s_gpu: undefined
-      });
-    } else if (profile !== 'custom') {
-      const selectedProfile = RESOURCE_PROFILES[profile];
-      props.handleModelChange({
-        ...props.model,
-        k8s_resource_profile: profile,
-        k8s_cpu: selectedProfile.cpu,
-        k8s_memory: selectedProfile.memory,
-        k8s_gpu: selectedProfile.gpu
-      });
-    } else {
-      props.handleModelChange({
-        ...props.model,
-        k8s_resource_profile: profile
-      });
-    }
-  };
-
-  const validateResources = (name: string, value: any): string | null => {
-    if (name === 'k8s_gpu') {
-      const numValue = parseInt(value) || 0;
-      if (numValue < 0) {
-        return 'GPU count cannot be negative';
-      }
-    }
-    return null;
-  };
-
-  const handleCustomInputChange = (e: ChangeEvent<HTMLInputElement>) => {
-    if (props.jobsView !== JobsView.CreateForm) {
-      return;
-    }
-
-    const { name, value } = e.target;
-    
-    const error = validateResources(name, value);
-    const newErrors = { ...props.errors };
-    if (error) {
-      newErrors[name] = error;
-    } else {
-      delete newErrors[name];
-    }
-    props.handleErrorsChange(newErrors);
-
-    props.handleModelChange({
-      ...props.model,
-      [name]: name === 'k8s_gpu' ? parseInt(value) || 0 : value
-    });
-  };
-
-  const handleTagChange = (event: ChangeEvent<HTMLInputElement>) => {
-    if (props.jobsView !== JobsView.CreateForm) {
-      return;
-    }
-
-    const { name, value } = event.target;
-    const tagIdxMatch = name.match(/^tag-(\d+)$/);
-
-    if (tagIdxMatch === null) {
-      return null;
-    }
-
-    const newTags = props.model.tags ?? [];
-    newTags[parseInt(tagIdxMatch[1])] = value;
-
-    props.handleModelChange({
-      ...props.model,
-      tags: newTags
-    });
-  };
-
-  const addTag = () => {
-    if (props.jobsView !== JobsView.CreateForm) {
-      return;
-    }
-
-    const newTags = [...(props.model.tags ?? []), ''];
-    props.handleModelChange({
-      ...props.model,
-      tags: newTags
-    });
-  };
-
-  const deleteTag = (idx: number) => {
-    if (props.jobsView !== JobsView.CreateForm) {
-      return;
-    }
-
-    const newTags = props.model.tags ?? [];
-    newTags.splice(idx, 1);
-    props.handleModelChange({
-      ...props.model,
-      tags: newTags
-    });
-  };
-
-  const tags = props.model.tags ?? [];
-
-  const createTags = () => {
-    return (
-      <Stack spacing={2}>
-        {tags.map((tag: string, idx: number) => (
-          <Stack key={idx} direction="row" spacing={1} alignItems="center">
-            <TextField
-              label={`Tag ${idx + 1}`}
-              id={`${formPrefix}tag-${idx}`}
-              name={`tag-${idx}`}
-              value={tag}
-              onChange={handleTagChange}
-              size="small"
-            />
-            <button
-              onClick={() => deleteTag(idx)}
-              title={`Delete tag ${idx + 1}`}
-              style={{ padding: '4px', border: 'none', background: 'transparent', cursor: 'pointer' }}
-            >
-              ✕
-            </button>
-          </Stack>
-        ))}
-        <button
-          onClick={addTag}
-          title="Add new tag"
-          style={{ padding: '8px 16px', border: '1px solid #ccc', background: 'white', cursor: 'pointer' }}
-        >
-          + Add Tag
-        </button>
-      </Stack>
-    );
-  };
-
-  const showTags = () => {
-    if (!props.model.tags) {
-      return (
-        <Stack spacing={2}>
-          <p>
-            <em>No tags</em>
-          </p>
-        </Stack>
-      );
-    }
-
-    return (
-      <Stack spacing={2}>
-        {tags.map((tag: string, idx: number) => (
-          <div key={idx}>
-            <strong>Tag {idx + 1}:</strong> {tag}
-          </div>
-        ))}
-      </Stack>
-    );
-  };
-
-  const tagsDisplay: JSX.Element | null =
-    props.jobsView === JobsView.CreateForm ? createTags() : showTags();
-
-  const model = props.model as any;
-  const resourceProfile = model.k8s_resource_profile || '';
-  const isCustom = resourceProfile === 'custom';
-
-  const hasResources = resourceProfile || model.k8s_cpu || model.k8s_memory || model.k8s_gpu;
+  const { model, handleModelChange, jobsView, errors, handleErrorsChange } = props;
+  const isReadOnly = jobsView !== JobsView.CreateForm;
   
-  const renderCreateForm = () => (
-    <>
-      <FormLabel component="legend">Kubernetes Resources (Optional)</FormLabel>
-      <Stack spacing={2}>
-        <FormControl fullWidth>
-          <InputLabel id={`${formPrefix}resource-profile-label`}>
-            Resource Profile
-          </InputLabel>
-          <Select
-            labelId={`${formPrefix}resource-profile-label`}
-            id={`${formPrefix}resource-profile`}
-            name="k8s_resource_profile"
-            value={resourceProfile}
-            onChange={handleSelectChange}
-            label="Resource Profile"
-          >
-            {Object.entries(RESOURCE_PROFILES).map(([key, profile]) => (
-              <MenuItem key={key} value={key}>
-                {profile.label}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+  const runtimeParams = model.runtimeEnvironmentParameters || {};
+  const [resources, setResources] = useState({
+    cpu: (runtimeParams.k8s_cpu as string) || '',
+    memory: (runtimeParams.k8s_memory as string) || '',
+    gpu: (runtimeParams.k8s_gpu as string) || ''
+  });
 
-        {isCustom && (
-          <>
-            <TextField
-              label="CPU Cores"
-              id={`${formPrefix}cpu`}
-              name="k8s_cpu"
-              value={model.k8s_cpu || ''}
-              onChange={handleCustomInputChange}
-              helperText="Examples: 0.5, 1, 2, 500m"
-              variant="outlined"
-              error={!!props.errors.k8s_cpu}
-            />
-            <TextField
-              label="Memory"
-              id={`${formPrefix}memory`}
-              name="k8s_memory"
-              value={model.k8s_memory || ''}
-              onChange={handleCustomInputChange}
-              helperText={
-                props.errors.k8s_memory || 
-                'Examples: 512Mi (512 MB), 1Gi (1 GB), 2Gi (2 GB)'
-              }
-              variant="outlined"
-              error={!!props.errors.k8s_memory}
-            />
-            <TextField
-              label="GPU Count"
-              id={`${formPrefix}gpu`}
-              name="k8s_gpu"
-              type="number"
-              value={model.k8s_gpu || 0}
-              onChange={handleCustomInputChange}
-              helperText={
-                props.errors.k8s_gpu || 
-                'Number of NVIDIA GPUs (0 for none, max 8)'
-              }
-              variant="outlined"
-              error={!!props.errors.k8s_gpu}
-              inputProps={{ min: 0, max: 8, step: 1 }}
-            />
-          </>
-        )}
-      </Stack>
-    </>
-  );
-
-  const renderDetailView = () => {
-    if (!hasResources) return null;
+  useEffect(() => {
+    const updatedModel = {
+      ...model,
+      runtimeEnvironmentParameters: {
+        ...model.runtimeEnvironmentParameters,
+        k8s_cpu: resources.cpu,
+        k8s_memory: resources.memory,
+        k8s_gpu: resources.gpu
+      }
+    };
     
-    return (
-      <>
-        <FormLabel component="legend">Kubernetes Resources</FormLabel>
-        <Stack spacing={2}>
-          {resourceProfile && (
-            <div>
-              <strong>Resource Profile:</strong> {RESOURCE_PROFILES[resourceProfile]?.label || resourceProfile}
-            </div>
-          )}
-          {model.k8s_cpu && (
-            <div>
-              <strong>CPU:</strong> {model.k8s_cpu}
-            </div>
-          )}
-          {model.k8s_memory && (
-            <div>
-              <strong>Memory:</strong> {model.k8s_memory}
-            </div>
-          )}
-          {model.k8s_gpu > 0 && (
-            <div>
-              <strong>GPU:</strong> {model.k8s_gpu}
-            </div>
-          )}
-        </Stack>
-      </>
-    );
+    if (jobsView === JobsView.CreateForm) {
+      handleModelChange(updatedModel as any);
+    } else if (jobsView === JobsView.JobDetail) {
+      handleModelChange(updatedModel as any);
+    } else if (jobsView === JobsView.JobDefinitionDetail) {
+      handleModelChange(updatedModel as any);
+    }
+  }, [resources]);
+
+  useEffect(() => {
+    const newErrors = { ...errors };
+    
+    if (resources.cpu && !/^\d*\.?\d+[m]?$/.test(resources.cpu)) {
+      newErrors.k8s_cpu = 'CPU format: number with optional "m" suffix (e.g., 0.5, 2, 500m)';
+    } else if (resources.cpu && parseFloat(resources.cpu) <= 0) {
+      newErrors.k8s_cpu = 'CPU must be greater than 0';
+    } else {
+      delete newErrors.k8s_cpu;
+    }
+    
+    if (resources.memory && !/^\d+(\.\d+)?([KMGT]i?)?$/i.test(resources.memory)) {
+      newErrors.k8s_memory = 'Memory format: number with optional unit (e.g., 512Mi, 2Gi, 1024)';
+    } else {
+      delete newErrors.k8s_memory;
+    }
+    
+    if (resources.gpu) {
+      if (!/^\d+$/.test(resources.gpu)) {
+        newErrors.k8s_gpu = 'GPU must be a whole number';
+      } else if (parseInt(resources.gpu) < 0) {
+        newErrors.k8s_gpu = 'GPU cannot be negative';
+      } else {
+        delete newErrors.k8s_gpu;
+      }
+    } else {
+      delete newErrors.k8s_gpu;
+    }
+    
+    handleErrorsChange(newErrors);
+  }, [resources]);
+
+  const handleResourceChange = (field: string) => (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    setResources({
+      ...resources,
+      [field]: event.target.value
+    });
   };
-
-  const resourceConfigSection = props.jobsView === JobsView.CreateForm 
-    ? renderCreateForm() 
-    : renderDetailView();
-
-  const idemTokenLabel = 'Idempotency token';
-  const idemTokenName = 'idempotencyToken';
-  const idemTokenId = `${formPrefix}${idemTokenName}`;
 
   return (
-    <Stack spacing={4}>
-      {resourceConfigSection}
-      {props.jobsView === JobsView.JobDetail && (
-        <div>
-          <strong>{idemTokenLabel}:</strong> {props.model.idempotencyToken}
-        </div>
-      )}
-      {props.jobsView === JobsView.CreateForm &&
-        props.model.createType === 'Job' && (
-          <TextField
-            label={idemTokenLabel}
-            variant="outlined"
-            onChange={handleInputChange}
-            value={props.model.idempotencyToken}
-            id={idemTokenId}
-            name={idemTokenName}
-          />
-        )}
+    <Stack spacing={3}>
+      <Typography variant="h6" component="h3">
+        Kubernetes Resources
+      </Typography>
+      
+      {isReadOnly ? (
+        <Box>
+          <Typography variant="body2">
+            CPU: {resources.cpu || 'Cluster default'}
+          </Typography>
+          <Typography variant="body2">
+            Memory: {resources.memory || 'Cluster default'}
+          </Typography>
+          {resources.gpu && (
+            <Typography variant="body2">
+              GPU: {resources.gpu}
+            </Typography>
+          )}
+        </Box>
+      ) : (
+        <>
+          <Stack spacing={2}>
+            <TextField
+              label="CPU"
+              value={resources.cpu}
+              onChange={handleResourceChange('cpu')}
+              error={!!errors.k8s_cpu}
+              helperText={errors.k8s_cpu || 'CPU cores or millicores (e.g., 0.5, 2, 500m). Leave empty for cluster default.'}
+              size="small"
+              fullWidth
+              placeholder="2"
+            />
+            
+            <TextField
+              label="Memory"
+              value={resources.memory}
+              onChange={handleResourceChange('memory')}
+              error={!!errors.k8s_memory}
+              helperText={errors.k8s_memory || 'Memory with unit (e.g., 512Mi, 2Gi). Leave empty for cluster default.'}
+              size="small"
+              fullWidth
+              placeholder="4Gi"
+            />
+            
+            <TextField
+              label="GPU"
+              value={resources.gpu}
+              onChange={handleResourceChange('gpu')}
+              error={!!errors.k8s_gpu}
+              helperText={errors.k8s_gpu || 'Number of GPUs. Leave empty for none.'}
+              size="small"
+              fullWidth
+              placeholder=""
+            />
+          </Stack>
 
-      <FormLabel component="legend">Tags</FormLabel>
-      {tagsDisplay}
+          <Alert severity="info">
+            <Typography variant="body2">
+              Optional resource requirements. Empty fields use cluster defaults.
+            </Typography>
+          </Alert>
+        </>
+      )}
     </Stack>
   );
 };

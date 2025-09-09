@@ -41,15 +41,20 @@
   },
   "dependencies": {
     "@jupyterlab/application": "^4.0.0",
-    "@jupyterlab/scheduler": "^2.11.0",
-    "@mui/material": "^5.0.0"
+    "@mui/material": "^5.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@jupyterlab/builder": "^4.0.0",
+    "@jupyterlab/scheduler": "file:../jupyter-scheduler",
     "@types/react": "^18.0.0",
     "npm-run-all": "^4.1.5",
     "rimraf": "^5.0.0",
     "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@jupyterlab/scheduler": "^2.11.0"
   },
   "sideEffects": [
     "style/*.css",
@@ -60,10 +65,38 @@
     "access": "public"
   },
   "jupyterlab": {
+    "discovery": {
+      "server": {
+        "managers": [
+          "pip"
+        ],
+        "base": {
+          "name": "jupyter_scheduler_k8s"
+        }
+      }
+    },
     "extension": true,
     "outputDir": "jupyter_scheduler_k8s/labextension",
     "disabledExtensions": [
       "@jupyterlab/scheduler:IAdvancedOptions"
-    ]
+    ],
+    "sharedPackages": {
+      "@jupyterlab/scheduler": {
+        "singleton": true,
+        "bundled": false
+      },
+      "@mui/material": {
+        "singleton": true
+      },
+      "@mui/system": {
+        "singleton": true
+      },
+      "react": {
+        "singleton": true
+      },
+      "react-dom": {
+        "singleton": true
+      }
+    }
   }
 }

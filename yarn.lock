@@ -712,6 +712,37 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@jupyterlab/scheduler@file:../jupyter-scheduler::locator=jupyter-scheduler-k8s%40workspace%3A.":
+  version: 2.11.0
+  resolution: "@jupyterlab/scheduler@file:../jupyter-scheduler#../jupyter-scheduler::hash=f07951&locator=jupyter-scheduler-k8s%40workspace%3A."
+  dependencies:
+    "@emotion/react": ^11.10.5
+    "@emotion/styled": ^11.10.5
+    "@jupyterlab/application": ^4
+    "@jupyterlab/apputils": ^4
+    "@jupyterlab/coreutils": ^6
+    "@jupyterlab/filebrowser": ^4
+    "@jupyterlab/launcher": ^4
+    "@jupyterlab/scheduler": ^2.11.0
+    "@jupyterlab/services": ^7
+    "@jupyterlab/translation": ^4
+    "@jupyterlab/ui-components": ^4
+    "@lumino/coreutils": ^2
+    "@lumino/polling": ^2
+    "@lumino/signaling": ^2
+    "@lumino/widgets": ^2
+    "@mui/icons-material": ^5.11.0
+    "@mui/material": ^5.10.6
+    "@mui/system": ^5.10.6
+    "@types/react-dom": ^18.0.5
+    cronstrue: ^2.12.0
+    react: ^18.2.0
+    react-dom: ^18.2.0
+    tzdata: ^1.0.33
+  checksum: f6a8bec93b044be79da773ea2a59117163a8c7e50ce050d158fcce02a18e9e4586bee0e6736be3dd6fafab143d02e458de26da10ad5408d25c2fbcbdc4560855
+  languageName: node
+  linkType: hard
+
 "@jupyterlab/scheduler@npm:^2.11.0":
   version: 2.11.0
   resolution: "@jupyterlab/scheduler@npm:2.11.0"
@@ -1762,9 +1793,9 @@ __metadata:
   linkType: hard
 
 "ansi-regex@npm:^6.0.1":
-  version: 6.2.0
-  resolution: "ansi-regex@npm:6.2.0"
-  checksum: f1a540a85647187f21918a87ea3fc910adc6ecc2bfc180c22d9b01a04379dce3a6c1f2e5375ab78e8d7d589eb1aeb734f49171e262e90c4225f21b4415c08c8c
+  version: 6.2.2
+  resolution: "ansi-regex@npm:6.2.2"
+  checksum: 9b17ce2c6daecc75bcd5966b9ad672c23b184dc3ed9bf3c98a0702f0d2f736c15c10d461913568f2cf527a5e64291c7473358885dd493305c84a1cfed66ba94f
   languageName: node
   linkType: hard
 
@@ -1794,9 +1825,9 @@ __metadata:
   linkType: hard
 
 "ansi-styles@npm:^6.1.0":
-  version: 6.2.1
-  resolution: "ansi-styles@npm:6.2.1"
-  checksum: ef940f2f0ced1a6347398da88a91da7930c33ecac3c77b72c5905f8b8fe402c52e6fde304ff5347f616e27a742da3f1dc76de98f6866c69251ad0b07a66776d9
+  version: 6.2.3
+  resolution: "ansi-styles@npm:6.2.3"
+  checksum: f1b0829cf048cce870a305819f65ce2adcebc097b6d6479e12e955fd6225df9b9eb8b497083b764df796d94383ff20016cc4dbbae5b40f36138fb65a9d33c2e2
   languageName: node
   linkType: hard
 
@@ -2441,9 +2472,9 @@ __metadata:
   linkType: hard
 
 "electron-to-chromium@npm:^1.5.211":
-  version: 1.5.214
-  resolution: "electron-to-chromium@npm:1.5.214"
-  checksum: e996a9f94ab7599489069aef4ddf1098d4c43871998ff80d4e388b927eaf7593bdb3dfcc4fda5d33ffd2f48b28f19f8aa73bca784da277091112c1b50e3b8128
+  version: 1.5.215
+  resolution: "electron-to-chromium@npm:1.5.215"
+  checksum: bb9cc85f51334fa9ae7ba3c2c77739616004c924e9282e955f39d90025ec40994fba9fd8d0128004e23fdfecdbe89cf9e04a1199c11c65c0213b1e090aa8c290
   languageName: node
   linkType: hard
 
@@ -3686,12 +3717,16 @@ __metadata:
   dependencies:
     "@jupyterlab/application": ^4.0.0
     "@jupyterlab/builder": ^4.0.0
-    "@jupyterlab/scheduler": ^2.11.0
+    "@jupyterlab/scheduler": "file:../jupyter-scheduler"
     "@mui/material": ^5.0.0
     "@types/react": ^18.0.0
     npm-run-all: ^4.1.5
+    react: ^18.2.0
+    react-dom: ^18.2.0
     rimraf: ^5.0.0
     typescript: ^5.0.0
+  peerDependencies:
+    "@jupyterlab/scheduler": ^2.11.0
   languageName: unknown
   linkType: soft
 
@@ -3953,9 +3988,9 @@ __metadata:
   linkType: hard
 
 "node-releases@npm:^2.0.19":
-  version: 2.0.19
-  resolution: "node-releases@npm:2.0.19"
-  checksum: 917dbced519f48c6289a44830a0ca6dc944c3ee9243c468ebd8515a41c97c8b2c256edb7f3f750416bc37952cc9608684e6483c7b6c6f39f6bd8d86c52cfe658
+  version: 2.0.20
+  resolution: "node-releases@npm:2.0.20"
+  checksum: 2a0a6e1505e0a5fad1b82de1779ca98c4950f1e2450afe18ccb5d00bf745104b017bf87db31a00bd0c017abcc24b11ed0ef5bd77a71fa7c19ee64394576c40ef
   languageName: node
   linkType: hard
 
@@ -3993,9 +4028,9 @@ __metadata:
   linkType: hard
 
 "nwsapi@npm:^2.2.2":
-  version: 2.2.21
-  resolution: "nwsapi@npm:2.2.21"
-  checksum: 1378b2556b01063c95d88932aefc0516e853b1a5b9c94457e03aabfd4e6a133c32c636c3ccaaebdc3a4e316390e61cdb380f39aa4009c20d2e8c0fec869e6a66
+  version: 2.2.22
+  resolution: "nwsapi@npm:2.2.22"
+  checksum: 9491f0396d8aaf7fd1f9ebbbbff5d9bb9090e5d200263cf31b117bbaad7eb79da86b4c9b9bcd64c4b35f6d7e1630d14ee21c0959c01131e89c1c5e22d72530bf
   languageName: node
   linkType: hard
 
@@ -5037,11 +5072,11 @@ __metadata:
   linkType: hard
 
 "strip-ansi@npm:^7.0.1":
-  version: 7.1.0
-  resolution: "strip-ansi@npm:7.1.0"
+  version: 7.1.2
+  resolution: "strip-ansi@npm:7.1.2"
   dependencies:
     ansi-regex: ^6.0.1
-  checksum: 859c73fcf27869c22a4e4d8c6acfe690064659e84bef9458aa6d13719d09ca88dcfd40cbf31fd0be63518ea1a643fe070b4827d353e09533a5b0b9fd4553d64d
+  checksum: db0e3f9654e519c8a33c50fc9304d07df5649388e7da06d3aabf66d29e5ad65d5e6315d8519d409c15b32fa82c1df7e11ed6f8cd50b0e4404463f0c9d77c8d0b
   languageName: node
   linkType: hard
 
