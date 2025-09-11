@@ -16,10 +16,6 @@ from jupyter_scheduler.models import JobFeature
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# TODO: Use jupyter-scheduler's logging system once it's available
-# Currently jupyter-scheduler doesn't expose its logger configuration,
-# so we manually add a console handler to ensure our logs appear in the server output
-
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.INFO)
 formatter = logging.Formatter(
@@ -38,25 +34,17 @@ class K8sExecutionManager(ExecutionManager):
     ):
         super().__init__(job_id, root_dir, db_url, staging_paths, database_manager_class)
         
-        logger.info("🔧 Initializing K8sExecutionManager with environment configuration:")
+        logger.info("Initializing K8sExecutionManager")
         
         self.s3_bucket = os.environ.get("S3_BUCKET")
         if not self.s3_bucket:
             logger.error("❌ S3_BUCKET environment variable not set")
-            logger.error("   Required: export S3_BUCKET=\"your-bucket-name\"")
+            logger.error("Required: export S3_BUCKET=\"your-bucket-name\"")
             raise ValueError("S3_BUCKET environment variable is required")
-        logger.info(f"   S3_BUCKET: {self.s3_bucket}")
         
         self.s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL")
-        if self.s3_endpoint_url:
-            logger.info(f"   S3_ENDPOINT_URL: {self.s3_endpoint_url}")
-        else:
-            logger.info("   S3_ENDPOINT_URL: (not set, using AWS S3)")
-            
         self.namespace = os.environ.get("K8S_NAMESPACE", "default")
         self.image = os.environ.get("K8S_IMAGE", "jupyter-scheduler-k8s:latest")
-        logger.info(f"   K8S_NAMESPACE: {self.namespace}")
-        logger.info(f"   K8S_IMAGE: {self.image}")
         
         self.executor_memory_request = os.environ.get(
             "K8S_EXECUTOR_MEMORY_REQUEST", "512Mi"
@@ -64,15 +52,12 @@ class K8sExecutionManager(ExecutionManager):
         self.executor_memory_limit = os.environ.get("K8S_EXECUTOR_MEMORY_LIMIT", "2Gi")
         self.executor_cpu_request = os.environ.get("K8S_EXECUTOR_CPU_REQUEST", "500m")
         self.executor_cpu_limit = os.environ.get("K8S_EXECUTOR_CPU_LIMIT", "2000m")
-        logger.info(f"   Memory: {self.executor_memory_request} request, {self.executor_memory_limit} limit")
-        logger.info(f"   CPU: {self.executor_cpu_request} request, {self.executor_cpu_limit} limit")
 
         # Auto-detect pull policy based on cluster type
         default_pull_policy = self._detect_image_pull_policy()
         self.image_pull_policy = os.environ.get(
             "K8S_IMAGE_PULL_POLICY", default_pull_policy
         )
-        logger.info(f"   Image Pull Policy: {self.image_pull_policy} ({'manual override' if 'K8S_IMAGE_PULL_POLICY' in os.environ else 'auto-detected'})")
 
         self.k8s_core = None
         self.k8s_batch = None
@@ -219,6 +204,9 @@ class K8sExecutionManager(ExecutionManager):
         """Wait for job to complete using Watch API."""
         w = watch.Watch()
         start_time = time.time()
+        
+        # Configurable scheduling timeout for autoscaling clusters
+        scheduling_timeout = int(os.environ.get('K8S_SCHEDULING_TIMEOUT', '300'))
 
         try:
             for event in w.stream(
@@ -229,6 +217,26 @@ class K8sExecutionManager(ExecutionManager):
             ):
                 job = event["object"]
                 job_status = job.status
+
+                # Check for pod scheduling issues
+                elapsed = time.time() - start_time
+                # Wait 30s before checking to allow pod creation and initial scheduling attempt
+                if elapsed > 30:
+                    pods = self.k8s_core.list_namespaced_pod(
+                        namespace=self.namespace,
+                        label_selector=f"job-name={job_name}"
+                    )
+                    
+                    for pod in pods.items:
+                        if pod.status.phase == "Pending":
+                            # Check if we've exceeded scheduling timeout
+                            if elapsed > scheduling_timeout:
+                                error_msg = self._extract_scheduling_error(pod)
+                                if error_msg:
+                                    logger.error(f"Job {job_name} scheduling failed: {error_msg}")
+                                    self._update_job_status_message(job_name, error_msg)
+                                    w.stop()
+                                    raise RuntimeError(error_msg)
 
                 if job_status.succeeded:
                     logger.info(f"Job {job_name} completed successfully")
@@ -277,6 +285,72 @@ class K8sExecutionManager(ExecutionManager):
         except Exception as e:
             w.stop()
             raise RuntimeError(f"Error waiting for job completion: {e}")
+    
+    def _extract_scheduling_error(self, pod) -> str:
+        """Extract user-friendly error message from pod scheduling issues."""
+        # Check pod conditions for scheduling problems
+        if pod.status.conditions:
+            for condition in pod.status.conditions:
+                if condition.type == "PodScheduled" and condition.status == "False":
+                    # Parse the K8s scheduler message into something readable
+                    msg = condition.message or condition.reason
+                    
+                    # Common scheduling failures with better messages
+                    if "Insufficient nvidia.com/gpu" in msg:
+                        return f"Cannot schedule: No nodes with GPU available"
+                    
+                    elif "Insufficient memory" in msg:
+                        return f"Cannot schedule: Insufficient memory available"
+                    
+                    elif "Insufficient cpu" in msg:
+                        return f"Cannot schedule: Insufficient CPU available"
+                    
+                    else:
+                        # Generic scheduling failure
+                        return f"Cannot schedule: {condition.reason} - {condition.message}"
+        
+        # Check pod events for additional context
+        try:
+            events = self.k8s_core.list_namespaced_event(
+                namespace=self.namespace,
+                field_selector=f"involvedObject.name={pod.metadata.name}"
+            )
+            for event in events.items:
+                if event.reason == "FailedScheduling":
+                    return f"Cannot schedule: {event.message}"
+        except Exception:
+            pass
+        
+        return "Cannot schedule: Pod is pending, check cluster resources"
+    
+    def _update_job_status_message(self, job_name: str, error_msg: str):
+        """Update K8s Job annotation with status message for UI display."""
+        try:
+            # Get the current job
+            job = self.k8s_batch.read_namespaced_job(
+                name=job_name,
+                namespace=self.namespace
+            )
+            
+            # Update the job data annotation with error message
+            if job.metadata.annotations and "jupyter-scheduler.io/job-data" in job.metadata.annotations:
+                job_data = json.loads(job.metadata.annotations["jupyter-scheduler.io/job-data"])
+                job_data["status"] = "FAILED"
+                job_data["status_message"] = error_msg
+                job.metadata.annotations["jupyter-scheduler.io/job-data"] = json.dumps(job_data)
+                
+                # Also update status label for queries
+                job.metadata.labels["jupyter-scheduler.io/status"] = "failed"
+                
+                # Patch the job
+                self.k8s_batch.patch_namespaced_job(
+                    name=job_name,
+                    namespace=self.namespace,
+                    body=job
+                )
+                logger.info(f"Updated job {job_name} with error: {error_msg}")
+        except Exception as e:
+            logger.error(f"Failed to update job status message: {e}")
 
     def _upload_to_s3(self, s3_input_prefix: str):
         """Upload staging files to S3 using AWS CLI."""
@@ -384,11 +458,7 @@ class K8sExecutionManager(ExecutionManager):
         k8s_gpu = runtime_params.get('k8s_gpu', 0)
         try:
             k8s_gpu = int(k8s_gpu) if k8s_gpu else 0
-            if k8s_gpu < 0:
-                logger.warning(f"    ⚠️  GPU count cannot be negative, using 0")
-                k8s_gpu = 0
         except (ValueError, TypeError):
-            logger.warning(f"    ⚠️  Invalid GPU value '{k8s_gpu}', using 0")
             k8s_gpu = 0
         
         resource_limits = {}

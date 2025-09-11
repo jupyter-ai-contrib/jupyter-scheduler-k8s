@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from typing import Any, Dict
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -103,7 +104,7 @@ class K8sQuery:
             value = getattr(condition.right, 'value', condition.right)
             
             if field_name in ['job_id', 'status', 'name']:
-                self._label_filters[f'jupyter-scheduler.io/{field_name.replace("_", "-")}'] = self._sanitize(str(value))
+                self._label_filters[f'jupyter-scheduler.io/{field_name.replace("_", "-")}'] = self.session._sanitize(str(value))
             else:
                 # Complex fields stored in annotations, filtered post-query
                 self._filters[field_name] = value
@@ -112,15 +113,14 @@ class K8sQuery:
             field_name = condition.left.name
             if field_name == 'status':
                 # Multiple values require post-query filtering
-                self._filters['status_in'] = [self._sanitize(str(v)) for v in condition.right.value]
+                self._filters['status_in'] = [self.session._sanitize(str(v)) for v in condition.right.value]
         
         return self
     
-    def _sanitize(self, value: str) -> str:
-        """Sanitize value for K8s labels."""
-        value = str(value).lower()
-        value = ''.join(c if c.isalnum() or c in '-_.' else '-' for c in value)
-        return value.strip('-_.')[:63] or "none"
+    def filter_by(self, **kwargs):
+        """Helper for filtering queries."""
+        # This method exists for API compatibility
+        pass
         
     def update(self, values: Dict):
         """Update matching jobs."""
@@ -140,7 +140,7 @@ class K8sQuery:
             if job.metadata.annotations and "jupyter-scheduler.io/job-data" in job.metadata.annotations:
                 job_data = json.loads(job.metadata.annotations["jupyter-scheduler.io/job-data"])
                 job_data.update(values)
-                job_data["update_time"] = get_utc_timestamp()
+                job_data["update_time"] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
                 
                 # Store updated data back to annotation
                 job.metadata.annotations["jupyter-scheduler.io/job-data"] = json.dumps(job_data)

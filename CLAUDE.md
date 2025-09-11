@@ -107,10 +107,9 @@ jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecut
 ### GPU and Resource Management ✅ 
 
 **UI Extension**: JupyterLab plugin that extends jupyter-scheduler's AdvancedOptions
-- **Resource Profiles**: Preset configurations (0.5 CPU/1Gi Memory → 8 CPU/16Gi Memory + GPU variants)
-- **Custom Resources**: Direct input fields for CPU, memory, GPU specifications  
+- **Direct Input Fields**: Simple text fields for CPU, memory, GPU specifications
 - **Optional Configuration**: Default uses cluster administrator settings (no resource limits)
-- **Platform Engineering Pattern**: Follows industry best practices from Kubeflow, SageMaker, Databricks
+- **Format Examples**: CPU ("2", "500m"), Memory ("4Gi", "512Mi"), GPU ("1" or empty)
 
 **Backend Processing**:
 - **K8sExecutionManager**: Extracts resource specifications from job model
@@ -119,11 +118,19 @@ jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecut
 - **Validation**: Minimal validation (negative GPU prevention), lets K8s handle format validation
 
 **Resource Configuration Flow**:
-1. User selects resource profile or custom values in jupyter-scheduler UI
-2. Frontend passes resource specifications to jupyter-scheduler backend
-3. K8sExecutionManager applies resources to container specification 
-4. Kubernetes scheduler places job based on resource requirements
-5. Resource configuration stored in job annotations for tracking
+1. User enters resource values in jupyter-scheduler UI
+2. Values stored in `runtime_environment_parameters`
+3. K8sExecutionManager extracts resources from runtime parameters
+4. Resources applied to Job's pod template specification
+5. Kubernetes scheduler attempts to place pod on suitable node
+6. If no suitable node, pod remains Pending and error reported to UI
+
+**Scheduling Error Detection**:
+- Wait 30 seconds after job creation (avoid false positives during normal startup)
+- Check if pod is still Pending → likely scheduling issue
+- Extract error from pod conditions/events
+- Update job status with user-friendly message
+- Error appears in UI job detail view
 
 ### Future Development Roadmap
 - **Job Management**: Stop/delete running K8s jobs from UI (`stop_job`, `delete_job` methods)
@@ -272,32 +279,57 @@ When questioning existing architecture:
 - **CLAUDE.md**: Internal development guidance, include decision reasoning and future Claude context
 - **Avoid redundancy**: Don't repeat information between docs, reference when needed
 
-## Code Quality Standards
+## Code Quality Standards (Applied)
 
-- **Comments**: Only add comments that explain parts of code that are not evident from the code itself
-- Explain WHY something is done when the reasoning isn't obvious
-- Comments above the line they describe, not inline  
-- Explain WHAT is being done when the code logic is complex or non-obvious
-- If the code is self-evident, no comment is needed
-- **Quality**: Insist on highest quality standards while avoiding over-engineering
-- **Scope**: Stay strictly within defined scope - no feature creep or unnecessary complexity
+### Zen of Python Principles
+- **No TODO comments**: Technical debt markers don't belong in production
+- **DRY (Don't Repeat Yourself)**: Extract common code, avoid duplication
+- **Document magic numbers**: Explain WHY 30 seconds, not just WHAT
+- **Simple is better than complex**: Direct solutions over clever abstractions
+- **Explicit is better than implicit**: Clear parameter passing, no hidden state
 
-## Logging Standards
+### Code Review Standards
+- **Remove redundant code**: Delete unused imports, variables, functions
+- **Consistent error handling**: Uniform patterns throughout codebase
+- **Minimal defensive programming**: Trust K8s validation, don't over-validate
+- **Clear variable names**: `k8s_cpu` not `cpu_val`, be specific
 
-- **Emoji Usage**: Use emojis sparingly and meaningfully - only for major action phases or critical states
-  - ✅ Good: `🔧 Initializing`, `📤 Uploading files`, `❌ S3 upload failed`
-  - ❌ Avoid: Emoji on every configuration line or routine status message
-- **Configuration Logging**: Clean, scannable format without visual clutter
-  - Use simple indented format: `   S3_BUCKET: bucket-name`
-  - Reserve emojis for errors (❌) or important phase transitions (🔧, 📤, 📥)
-- **Action Logging**: Lead with meaningful emoji, follow with clear description
-  - `📤 Uploading files from /path to S3...`
-  - `✅ Files successfully uploaded to s3://bucket/path`
-- **Debug Information**: Include helpful context without emoji noise
-  - `   Command: aws s3 sync /local s3://bucket/path --quiet`
+## Logging Standards (Simplified)
+
+- **Emoji Usage**: Only for major phases (upload, download, success, failure)
+  - ✅ Keep: `📤 Uploading files`, `❌ S3 upload failed`
+  - ❌ Remove: Emojis from configuration logging
+- **Configuration Logging**: Clean, minimal output
+  - Simple: `Initializing K8sExecutionManager`
+  - Not: `🔧 Initializing with environment configuration:`
+- **Error Messages**: Clear, actionable, no patronizing language
+  - Good: "Cannot schedule: No nodes with GPU available"
+  - Bad: "Configured by your administrator" (patronizing)
 
 ## Documentation Standards
 
-- **Placeholder URLs/Values**: Use angle bracket format `<placeholder-description>`. Examples: `<your-s3-endpoint-url>`, `<your-minio-server-url>`, `<your-namespace>`
-- **Comment Style**: Comments above the line they describe, not inline
-- **README vs CLAUDE.md**: README is user-facing, CLAUDE.md is development/architectural context
+- **Placeholder Values**: Use angle brackets `<placeholder>` for user values
+- **Comment Style**: Above the line, explain WHY not WHAT when obvious
+- **Document Separation**:
+  - **README.md**: User guide, troubleshooting, examples
+  - **CLAUDE.md**: Architecture, decisions, future Claude context
+  - **No duplication**: Each fact in one place only
+
+## K8s Resource Architecture (Key Concepts)
+
+### Job vs Pod Hierarchy
+- **Job**: Contains pod template with resource specifications
+- **Pod**: Created by Job, actually consumes resources
+- **Scheduling**: Happens at Pod level, not Job level
+- **Resource specs**: Defined on Job template, applied to Pod
+
+### Watch API Pattern (Best Practice)
+- **Not polling**: Uses K8s Watch API for real-time events
+- **Event-driven**: Reacts to job status changes as they happen
+- **Timeout**: Safety limit (10 min), not polling interval
+- **Scheduling timeout**: Configurable wait for pod placement (default 5 min)
+
+### 30-Second Delay Reasoning
+- **Normal startup**: 1-5s scheduling + 10-20s image pull + startup
+- **30s threshold**: Confident it's a real problem, not normal delay
+- **Prevents false positives**: All pods start as Pending initially
