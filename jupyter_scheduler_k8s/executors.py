@@ -11,7 +11,13 @@ from typing import Dict
 from kubernetes import client, config, watch
 from kubernetes.client.rest import ApiException
 from jupyter_scheduler.executors import ExecutionManager
-from jupyter_scheduler.models import JobFeature
+from jupyter_scheduler.models import JobFeature, Status
+
+
+class JobStoppedException(Exception):
+    """Raised when a job is stopped by user request."""
+    pass
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -99,6 +105,28 @@ class K8sExecutionManager(ExecutionManager):
             )
 
         return "Always"
+    
+    def process(self):
+        """Override process to handle JobStoppedException and set STOPPED status."""
+        self.before_start()
+        try:
+            self.execute()
+        except JobStoppedException as e:
+            # Job was stopped by user - mark as STOPPED, not FAILED
+            logger.info(f"Job {self.job_id} was stopped: {e}")
+            with self.db_session() as session:
+                from jupyter_scheduler.orm import Job
+                from jupyter_scheduler.utils import get_utc_timestamp
+                session.query(Job).filter(Job.job_id == self.job_id).update(
+                    {"status": Status.STOPPED, "end_time": get_utc_timestamp()}
+                    # Note: No status_message to match vanilla behavior (no red banner)
+                )
+                session.commit()
+        except Exception as e:
+            # Other exceptions are failures
+            self.on_failure(e)
+        else:
+            self.on_complete()
 
     @classmethod
     def supported_features(cls) -> Dict[JobFeature, bool]:
@@ -107,8 +135,8 @@ class K8sExecutionManager(ExecutionManager):
             JobFeature.timeout_seconds: False,
             JobFeature.output_formats: True,
             JobFeature.job_name: False,
-            JobFeature.stop_job: False,
-            JobFeature.delete_job: False,
+            JobFeature.stop_job: True,  # Now supported via K8sScheduler
+            JobFeature.delete_job: True,  # Now supported via K8sScheduler
         }
 
     def validate(self, input_path: str) -> bool:
@@ -134,7 +162,9 @@ class K8sExecutionManager(ExecutionManager):
 
         try:
             self._execute_with_s3(job_name)
-
+        except JobStoppedException as e:
+            logger.info(f"Job {job_name} stopped by user")
+            raise
         except Exception as e:
             logger.error(f"Job execution failed: {e}")
             raise
@@ -218,6 +248,14 @@ class K8sExecutionManager(ExecutionManager):
                 job = event["object"]
                 job_status = job.status
 
+                # Check if job was suspended (user stopped it)
+                # K8s sets suspend=True when a job is suspended
+                if hasattr(job.spec, 'suspend') and job.spec.suspend:
+                    logger.info(f"Job {job_name} was stopped by user")
+                    w.stop()
+                    # Raise our custom exception for stopped jobs
+                    raise JobStoppedException(f"Job {job_name} was stopped by user request")
+
                 # Check for pod scheduling issues
                 elapsed = time.time() - start_time
                 # Wait 30s before checking to allow pod creation and initial scheduling attempt
@@ -282,6 +320,10 @@ class K8sExecutionManager(ExecutionManager):
                         f"Job {job_name} timed out after {timeout} seconds"
                     )
 
+        except JobStoppedException:
+            # Re-raise JobStoppedException without wrapping - it's expected behavior
+            w.stop()
+            raise
         except Exception as e:
             w.stop()
             raise RuntimeError(f"Error waiting for job completion: {e}")
