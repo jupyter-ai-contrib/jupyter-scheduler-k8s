@@ -104,9 +104,13 @@ When creating a job, expand "Advanced Options" to configure resources:
   - Examples: `1`, `2`
   - Leave empty for no GPU
 
-### Environment Variables
+### Custom Environment Variables
 
-**K8s Backend Configuration**:
+Set custom environment variables for notebook execution via the Advanced Options UI. Variables are available in notebooks via `os.environ`.
+
+### Backend Configuration
+
+**K8s Environment Variables**:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|

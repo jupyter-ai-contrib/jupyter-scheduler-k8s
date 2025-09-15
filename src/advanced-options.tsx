@@ -1,13 +1,28 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, ChangeEvent } from 'react';
 import {
   TextField,
   Stack,
   Typography,
   Box,
-  Alert
+  Alert,
+  IconButton
 } from '@mui/material';
 import { Scheduler } from '@jupyterlab/scheduler';
 import { JobsView } from '@jupyterlab/scheduler';
+import { addIcon, closeIcon } from '@jupyterlab/ui-components';
+
+interface IEnvVar {
+  name: string;
+  value: string;
+}
+
+const ENV_VAR_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const PROTECTED_VARS = [
+  'S3_INPUT_PREFIX', 'S3_OUTPUT_PREFIX', 'NOTEBOOK_PATH',
+  'OUTPUT_PATH', 'PARAMETERS', 'OUTPUT_FORMATS', 'PACKAGE_INPUT_FOLDER',
+  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+  'AWS_DEFAULT_REGION', 'AWS_REGION', 'S3_ENDPOINT_URL'
+];
 
 const K8sAdvancedOptions = (
   props: Scheduler.IAdvancedOptionsProps
@@ -21,8 +36,25 @@ const K8sAdvancedOptions = (
     memory: (runtimeParams.k8s_memory as string) || '',
     gpu: (runtimeParams.k8s_gpu as string) || ''
   });
+  
+  // Convert Dict to array for UI
+  const [envVars, setEnvVars] = useState<IEnvVar[]>(() => {
+    const envDict = (model as any).environmentVariables || {};
+    return Object.entries(envDict).map(([name, value]) => ({
+      name,
+      value: String(value)
+    }));
+  });
 
   useEffect(() => {
+    // Convert array to Dict for storage (last value wins for duplicates)
+    const envVarsDict: Record<string, string> = {};
+    envVars.forEach(env => {
+      if (env.name && !PROTECTED_VARS.includes(env.name)) {
+        envVarsDict[env.name] = env.value;
+      }
+    });
+    
     const updatedModel = {
       ...model,
       runtimeEnvironmentParameters: {
@@ -30,17 +62,12 @@ const K8sAdvancedOptions = (
         k8s_cpu: resources.cpu,
         k8s_memory: resources.memory,
         k8s_gpu: resources.gpu
-      }
+      },
+      environmentVariables: envVarsDict
     };
-    
-    if (jobsView === JobsView.CreateForm) {
-      handleModelChange(updatedModel as any);
-    } else if (jobsView === JobsView.JobDetail) {
-      handleModelChange(updatedModel as any);
-    } else if (jobsView === JobsView.JobDefinitionDetail) {
-      handleModelChange(updatedModel as any);
-    }
-  }, [resources]);
+
+    handleModelChange(updatedModel as any);
+  }, [resources, envVars]);
 
   useEffect(() => {
     const newErrors = { ...errors };
@@ -71,8 +98,34 @@ const K8sAdvancedOptions = (
       delete newErrors.k8s_gpu;
     }
     
+    // Validate environment variables
+    const seenNames = new Set<string>();
+    envVars.forEach((envVar, idx) => {
+      const nameKey = `env-${idx}-name`;
+      const valueKey = `env-${idx}-value`;
+      
+      if (!envVar.name) {
+        newErrors[nameKey] = 'Environment variable name is required';
+      } else if (!ENV_VAR_REGEX.test(envVar.name)) {
+        newErrors[nameKey] = 'Invalid name: must start with letter or underscore, contain only letters, numbers, underscores';
+      } else if (PROTECTED_VARS.includes(envVar.name)) {
+        newErrors[nameKey] = `Cannot override protected variable: ${envVar.name}`;
+      } else if (seenNames.has(envVar.name)) {
+        newErrors[nameKey] = `Duplicate name: ${envVar.name} (last value will be used)`;
+      } else {
+        delete newErrors[nameKey];
+      }
+      
+      if (envVar.name) {
+        seenNames.add(envVar.name);
+      }
+      
+      // Empty values are allowed (common for flags)
+      delete newErrors[valueKey];
+    });
+    
     handleErrorsChange(newErrors);
-  }, [resources]);
+  }, [resources, envVars]);
 
   const handleResourceChange = (field: string) => (
     event: React.ChangeEvent<HTMLInputElement>
@@ -82,28 +135,53 @@ const K8sAdvancedOptions = (
       [field]: event.target.value
     });
   };
+  
+  const handleEnvVarChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const match = event.target.name.match(/^env-(\d+)-(name|value)$/);
+    if (!match) return;
+    
+    const idx = parseInt(match[1]);
+    const field = match[2] as 'name' | 'value';
+    
+    const newEnvVars = [...envVars];
+    newEnvVars[idx] = {
+      ...newEnvVars[idx],
+      [field]: event.target.value
+    };
+    setEnvVars(newEnvVars);
+  };
+  
+  const addEnvVar = () => {
+    setEnvVars([...envVars, { name: '', value: '' }]);
+  };
+  
+  const removeEnvVar = (idx: number) => {
+    const newEnvVars = envVars.filter((_, i) => i !== idx);
+    setEnvVars(newEnvVars);
+  };
 
   return (
     <Stack spacing={3}>
-      <Typography variant="h6" component="h3">
-        Kubernetes Resources
-      </Typography>
-      
-      {isReadOnly ? (
-        <Box>
-          <Typography variant="body2">
-            CPU: {resources.cpu || 'Cluster default'}
-          </Typography>
-          <Typography variant="body2">
-            Memory: {resources.memory || 'Cluster default'}
-          </Typography>
-          {resources.gpu && (
+      <Box>
+        <Typography variant="h6" component="h3">
+          Kubernetes Resources
+        </Typography>
+        
+        {isReadOnly ? (
+          <Box>
             <Typography variant="body2">
-              GPU: {resources.gpu}
+              CPU: {resources.cpu || 'Cluster default'}
             </Typography>
-          )}
-        </Box>
-      ) : (
+            <Typography variant="body2">
+              Memory: {resources.memory || 'Cluster default'}
+            </Typography>
+            {resources.gpu && (
+              <Typography variant="body2">
+                GPU: {resources.gpu}
+              </Typography>
+            )}
+          </Box>
+        ) : (
         <>
           <Stack spacing={2}>
             <TextField
@@ -147,6 +225,84 @@ const K8sAdvancedOptions = (
           </Alert>
         </>
       )}
+      </Box>
+      
+      <Box>
+        <Typography variant="h6" component="h3" sx={{ mb: 2 }}>
+          Environment Variables
+        </Typography>
+        
+        {isReadOnly ? (
+          <Box>
+            {envVars.length === 0 ? (
+              <Typography variant="body2" color="text.secondary">
+                No environment variables configured
+              </Typography>
+            ) : (
+              envVars.map((envVar, idx) => (
+                <Typography key={idx} variant="body2">
+                  {envVar.name}: {envVar.value || '(empty)'}
+                </Typography>
+              ))
+            )}
+          </Box>
+        ) : (
+          <Stack spacing={2}>
+            {envVars.map((envVar, idx) => {
+              const nameError = errors[`env-${idx}-name`];
+              return (
+                <Box key={idx} display="flex" gap={1} alignItems="flex-start">
+                  <TextField
+                    name={`env-${idx}-name`}
+                    value={envVar.name}
+                    onChange={handleEnvVarChange}
+                    placeholder="Name"
+                    size="small"
+                    error={!!nameError}
+                    helperText={nameError}
+                    sx={{ flexGrow: 1 }}
+                  />
+                  <TextField
+                    name={`env-${idx}-value`}
+                    value={envVar.value}
+                    onChange={handleEnvVarChange}
+                    placeholder="Value"
+                    size="small"
+                    sx={{ flexGrow: 1 }}
+                  />
+                  <IconButton
+                    onClick={() => removeEnvVar(idx)}
+                    title="Remove this environment variable"
+                    size="small"
+                    sx={{ mt: 0.5 }}
+                  >
+                    <closeIcon.react />
+                  </IconButton>
+                </Box>
+              );
+            })}
+            
+            <Box>
+              <IconButton
+                onClick={addEnvVar}
+                title="Add environment variable"
+                size="small"
+              >
+                <addIcon.react />
+              </IconButton>
+            </Box>
+            
+            {envVars.length > 0 && (
+              <Alert severity="info">
+                <Typography variant="body2">
+                  Environment variables will be available in the notebook execution environment.
+                  Protected system variables cannot be overridden.
+                </Typography>
+              </Alert>
+            )}
+          </Stack>
+        )}
+      </Box>
     </Stack>
   );
 };

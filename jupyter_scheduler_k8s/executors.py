@@ -9,6 +9,17 @@ import nbformat
 from pathlib import Path
 from typing import Dict
 from kubernetes import client, config, watch
+
+# Configuration constants
+MAX_ENV_VARS_TO_LOG = 10
+
+# Protected environment variables that cannot be overridden by users
+PROTECTED_ENV_VARS = {
+    'S3_INPUT_PREFIX', 'S3_OUTPUT_PREFIX', 'NOTEBOOK_PATH',
+    'OUTPUT_PATH', 'PARAMETERS', 'OUTPUT_FORMATS', 'PACKAGE_INPUT_FOLDER',
+    'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+    'AWS_DEFAULT_REGION', 'AWS_REGION', 'S3_ENDPOINT_URL'
+}
 from kubernetes.client.rest import ApiException
 from jupyter_scheduler.executors import ExecutionManager
 from jupyter_scheduler.models import JobFeature, Status
@@ -217,6 +228,17 @@ class K8sExecutionManager(ExecutionManager):
             logger.info(f"🚀 Creating Kubernetes job '{job_name}' in namespace '{self.namespace}'")
             logger.info(f"    Image: {self.image}")
             logger.info(f"    Resource limits: {self.executor_memory_limit} memory, {self.executor_cpu_limit} CPU")
+            
+            # Log environment variables summary (never log values)
+            user_env_dict = self._extract_user_env_vars()
+            
+            if user_env_dict:
+                names = sorted(user_env_dict.keys())
+                if len(names) > MAX_ENV_VARS_TO_LOG:
+                    logger.info(f"    Environment variables: {len(names)} user variables configured")
+                else:
+                    logger.info(f"    Environment variables: {', '.join(names)}")
+            
             self.k8s_batch.create_namespaced_job(namespace=self.namespace, body=job)
             logger.info(f"✅ Kubernetes job '{job_name}' created successfully")
 
@@ -416,6 +438,22 @@ class K8sExecutionManager(ExecutionManager):
 
         logger.info(f"✅ Files successfully uploaded to {s3_input_prefix}")
 
+    def _extract_user_env_vars(self):
+        """Extract and validate user environment variables from model.
+        Returns a dict filtered for protected variables.
+        """
+        user_env_dict = {}
+
+        if self.model.environment_variables:
+            logger.info(f"Processing {len(self.model.environment_variables)} environment variables from model")
+            for name, value in self.model.environment_variables.items():
+                if name not in PROTECTED_ENV_VARS:
+                    user_env_dict[name] = str(value)
+        else:
+            logger.info("No environment variables in model")
+
+        return user_env_dict
+    
     def _download_from_s3(self, s3_output_prefix: str):
         """Download output files from S3 to staging directory using AWS CLI."""
         # Use available staging path to determine directory
@@ -492,6 +530,30 @@ class K8sExecutionManager(ExecutionManager):
             logger.info(f"    Passing AWS credentials: {', '.join(passed_credentials)}")
         else:
             logger.warning("    ⚠️  No AWS credentials found in environment - container may fail")
+        
+        # Add user-defined environment variables (filtering protected ones)
+        user_env_dict = self._extract_user_env_vars()
+        
+        # Check for any protected vars that were filtered
+        if self.model.environment_variables:
+            protected_attempted = [
+                name for name in self.model.environment_variables.keys()
+                if name in PROTECTED_ENV_VARS
+            ]
+            if protected_attempted:
+                logger.warning(f"    Skipped protected environment variables: {', '.join(protected_attempted)}")
+        
+        # Add user env vars to container
+        for name, value in user_env_dict.items():
+            env_vars.append(client.V1EnvVar(name=name, value=value))
+        
+        # Log user env vars
+        if user_env_dict:
+            names = sorted(user_env_dict.keys())
+            if len(names) > MAX_ENV_VARS_TO_LOG:
+                logger.info(f"    User environment variables: {len(names)} variables defined")
+            else:
+                logger.info(f"    User environment variables: {', '.join(names)}")
 
         # Extract K8s resources from runtime environment parameters
         runtime_params = getattr(self.model, 'runtime_environment_parameters', {}) or {}
