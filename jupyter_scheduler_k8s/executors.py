@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import datetime
 import logging
 import subprocess
 import sys
@@ -31,16 +32,6 @@ class JobStoppedException(Exception):
 
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
-formatter = logging.Formatter(
-    "[%(levelname)s %(asctime)s.%(msecs)03d K8sScheduler] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
 
 
 class K8sExecutionManager(ExecutionManager):
@@ -397,14 +388,14 @@ class K8sExecutionManager(ExecutionManager):
             )
             
             # Update the job data annotation with error message
-            if job.metadata.annotations and "jupyter-scheduler.io/job-data" in job.metadata.annotations:
-                job_data = json.loads(job.metadata.annotations["jupyter-scheduler.io/job-data"])
+            if job.metadata.annotations and "scheduler.jupyter.org/job-data" in job.metadata.annotations:
+                job_data = json.loads(job.metadata.annotations["scheduler.jupyter.org/job-data"])
                 job_data["status"] = "FAILED"
                 job_data["status_message"] = error_msg
-                job.metadata.annotations["jupyter-scheduler.io/job-data"] = json.dumps(job_data)
+                job.metadata.annotations["scheduler.jupyter.org/job-data"] = json.dumps(job_data)
                 
                 # Also update status label for queries
-                job.metadata.labels["jupyter-scheduler.io/status"] = "failed"
+                job.metadata.labels["scheduler.jupyter.org/status"] = "failed"
                 
                 # Patch the job
                 self.k8s_batch.patch_namespaced_job(
@@ -621,12 +612,23 @@ class K8sExecutionManager(ExecutionManager):
         # Create labels for database-style querying
         labels = {
             "app.kubernetes.io/managed-by": "jupyter-scheduler-k8s",
-            "jupyter-scheduler.io/job-id": self._sanitize(self.job_id),
-            "jupyter-scheduler.io/status": self._sanitize(self.model.status or "pending"),
+            "scheduler.jupyter.org/job-id": self._sanitize(self.job_id),
+            "scheduler.jupyter.org/status": self._sanitize(self.model.status or "pending"),
         }
-        
+
         if hasattr(self.model, 'name') and self.model.name:
-            labels["jupyter-scheduler.io/name"] = self._sanitize(self.model.name)
+            labels["scheduler.jupyter.org/name"] = self._sanitize(self.model.name)
+
+        if hasattr(self.model, 'job_definition_id') and self.model.job_definition_id:
+            labels["scheduler.jupyter.org/job-definition-id"] = self._sanitize(self.model.job_definition_id)
+
+        if hasattr(self.model, 'idempotency_token') and self.model.idempotency_token:
+            labels["scheduler.jupyter.org/idempotency-token"] = self._sanitize(self.model.idempotency_token)
+
+        # Note: start_time is not added as a label because:
+        # 1. K8s labels can't do >= comparisons needed for start_time queries
+        # 2. Storing timestamps as labels violates K8s best practices
+        # 3. The data is available in annotations for post-filtering
         
         # Store complete job data in annotation for database queries
         job_data = {
@@ -646,7 +648,7 @@ class K8sExecutionManager(ExecutionManager):
         }
         
         annotations = {
-            "jupyter-scheduler.io/job-data": json.dumps(job_data)
+            "scheduler.jupyter.org/job-data": json.dumps(job_data)
         }
         
         k8s_job = client.V1Job(

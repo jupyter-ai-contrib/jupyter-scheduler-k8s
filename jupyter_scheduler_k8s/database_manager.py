@@ -18,8 +18,8 @@ class K8sDatabaseManager(DatabaseManager):
             return K8sSession(namespace=namespace)
         return session_factory
     
-    def create_tables(self, db_url: str, drop_tables: bool = False):
-        """Ensure K8s namespace exists."""
+    def create_tables(self, db_url: str, drop_tables: bool = False, Base=None):
+        """Ensure K8s namespace exists. Base parameter is ignored for K8s."""
         if not db_url.startswith("k8s://"):
             return
             

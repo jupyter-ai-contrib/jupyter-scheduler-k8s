@@ -14,13 +14,14 @@ Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jup
 
 **Key features:**
 - **Resource configuration** - CPU, memory, GPU allocation through UI
+- **Native scheduling** - Uses K8s CronJobs with timezone support (no polling)
 - **S3 storage** - files survive cluster or server failures
 - **Jobs-as-records** - execution Jobs serve as both workload AND database
 - Works with any Kubernetes cluster (Kind, minikube, EKS, GKE, AKS)
 
 ## Requirements
 
-- Kubernetes cluster (Kind, minikube, or cloud provider)  
+- Kubernetes cluster v1.27+ (for native timezone support in CronJobs)
 - S3-compatible storage (AWS S3, MinIO, GCS with S3 API, etc.)
 - Python 3.9+
 - jupyter-scheduler>=2.11.0
@@ -60,6 +61,12 @@ export AWS_SECRET_ACCESS_KEY="<your-secret-key>"
 
 # Launch Jupyter Lab with K8s backend (from same terminal with env vars)
 jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
+
+# For full K8s-native mode (K8s database + K8s execution + CronJob scheduling):
+jupyter lab \
+  --SchedulerApp.scheduler_class="jupyter_scheduler_k8s.K8sScheduler" \
+  --SchedulerApp.database_manager_class="jupyter_scheduler_k8s.K8sDatabaseManager" \
+  --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
 ```
 
 ### Cloud Deployment
@@ -86,6 +93,12 @@ export K8S_NAMESPACE="<your-namespace>"
 
 # Launch Jupyter Lab with K8s backend
 jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
+
+# For full K8s-native mode (K8s database + K8s execution + CronJob scheduling):
+jupyter lab \
+  --SchedulerApp.scheduler_class="jupyter_scheduler_k8s.K8sScheduler" \
+  --SchedulerApp.database_manager_class="jupyter_scheduler_k8s.K8sDatabaseManager" \
+  --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
 ```
 
 ## Resource Configuration
@@ -117,7 +130,7 @@ Set custom environment variables for notebook execution via the Advanced Options
 | `K8S_NAMESPACE` | No | `default` | Kubernetes namespace |
 | `K8S_IMAGE` | No | `jupyter-scheduler-k8s:latest` | Container image |
 | `K8S_IMAGE_PULL_POLICY` | No | Auto-detected | `Never` for local, `Always` for cloud |
-| `K8S_SCHEDULING_TIMEOUT` | No | `300` | Seconds to wait for pod scheduling |
+| `K8S_SCHEDULING_TIMEOUT` | No | `300` | Maximum seconds to wait before reporting scheduling failure |
 
 **S3 Storage Configuration** (required):
 
@@ -186,8 +199,11 @@ jupyter labextension list      # Check frontend
 - Check IAM permissions for bucket access
 
 **Pod stuck in Pending:**
-- After 30 seconds, likely a resource issue
+- The system waits 30 seconds before checking (allows normal startup)
+- After 30 seconds, scheduling errors will be detected and reported
+- If still pending after 5 minutes (configurable via `K8S_SCHEDULING_TIMEOUT`), job fails
 - Check pod events: `kubectl describe pod <pod-name>`
+- Common causes: Insufficient resources, no nodes with requested GPU, image pull errors
 
 ## Development
 
@@ -217,10 +233,14 @@ make clean          # Remove cluster and cleanup
 ### Working Features ✅
 - **K8s Execution**: Notebooks run in isolated Kubernetes pods
 - **Resource Configuration**: CPU, memory, GPU allocation through UI
-- **Scheduling Error Detection**: User-friendly messages when resources unavailable
+- **Smart Scheduling Error Detection**:
+  - 30-second grace period prevents false positives during normal startup
+  - Clear messages for resource issues (GPU, memory, CPU unavailable)
+  - Configurable timeout for autoscaling clusters
 - **S3 Storage**: Files persist beyond cluster or server failures
 - **Jobs-as-Records**: Execution Jobs serve as database (no SQL needed)
-- **Watch API Monitoring**: Real-time job status updates
+- **K8s-Native Scheduling**: CronJobs for scheduled job definitions (timezone support)
+- **Watch API Monitoring**: Real-time job status updates (no polling)
 - **Parameter Injection**: Dynamic notebook customization
 - **Multiple Output Formats**: HTML, PDF via nbconvert
 - **File Handling**: Any notebook size with S3 operations

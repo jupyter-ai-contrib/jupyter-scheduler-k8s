@@ -125,12 +125,15 @@ jupyter lab --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecut
 5. Kubernetes scheduler attempts to place pod on suitable node
 6. If no suitable node, pod remains Pending and error reported to UI
 
-**Scheduling Error Detection**:
-- Wait 30 seconds after job creation (avoid false positives during normal startup)
-- Check if pod is still Pending → likely scheduling issue
-- Extract error from pod conditions/events
-- Update job status with user-friendly message
-- Error appears in UI job detail view
+**Scheduling Error Detection (Two-Tier Timeout System)**:
+- **Initial Grace Period**: 30 seconds hardcoded wait (executors.py line 275)
+  - Avoids checking during normal pod startup (scheduling + image pull + init)
+  - Prevents false positives and unnecessary API calls
+- **Scheduling Timeout**: 300 seconds configurable (`K8S_SCHEDULING_TIMEOUT` env var)
+  - Maximum time to wait before reporting scheduling failure
+  - Allows for autoscaling clusters to provision new nodes
+- **Error Extraction**: Parse pod conditions/events for user-friendly messages
+- **UI Feedback**: Errors appear in job detail view with actionable information
 
 ### Future Development Roadmap
 - **Job Management**: Stop/delete running K8s jobs from UI (`stop_job`, `delete_job` methods)
@@ -249,6 +252,74 @@ def archive_old_jobs(retention_days=30):
     # Extract metadata to ConfigMap/S3, delete Job
 ```
 
+## CronJob Support and K8s-Native Scheduling
+
+### Architecture Overview
+The K8s backend supports Kubernetes CronJobs for scheduled job definitions:
+- **Job Definitions with schedules**: Automatically create K8s CronJobs
+- **CronJob-spawned Jobs**: Use K8s name as job_id (e.g., `nb-jobdef-176a79fb-29300882`)
+- **Hybrid ID approach**: Regular jobs use UUID, CronJob jobs use K8s name
+- **Status synchronization**: Always read from K8s Job status, not stale annotations
+
+### Implementation Details
+- **CronJob Template**: Includes full job metadata in annotations
+- **ImagePullPolicy Detection**: Based on K8s context, not KUBECONFIG env var
+- **Job Naming**: Derives from CronJob name + unique suffix
+- **Status Updates**: K8s Job status overrides annotation values
+
+### Critical Configuration Lessons
+
+**Command Line Argument Prefixes:**
+```bash
+# CORRECT - Use SchedulerApp prefix for app-level traits
+jupyter lab \
+  --SchedulerApp.scheduler_class="jupyter_scheduler_k8s.K8sScheduler" \
+  --SchedulerApp.database_manager_class="jupyter_scheduler_k8s.K8sDatabaseManager" \
+  --Scheduler.execution_manager_class="jupyter_scheduler_k8s.K8sExecutionManager"
+
+# INCORRECT - Will cause SQLAlchemy errors
+# --Scheduler.database_manager_class (Scheduler doesn't have this trait!)
+```
+
+**Why This Matters:**
+- `SchedulerApp` (from extension.py) has `database_manager_class` trait
+- `Scheduler` class only has execution-related traits
+- Misconfiguration leads to SQLAlchemy trying to load "k8s" dialect
+- K8sScheduler now validates configuration and provides helpful error messages
+
+### ImagePullPolicy Auto-Detection
+```python
+def _detect_image_pull_policy(self) -> str:
+    """Auto-detect based on K8s context name."""
+    # Checks active context for local indicators (kind, minikube, docker-desktop)
+    # Returns "Never" for local, "Always" for remote
+```
+
+### Logging Philosophy
+- **Log CronJob creation**: Important administrative action
+- **Don't log spawned jobs**: K8s handles this, avoid redundant logging
+- **Query-time visibility**: Jobs appear in UI when queried
+- **Avoid polling**: No background tasks watching for new jobs
+
+### Architecture Decision: Why 30 Seconds is Hardcoded
+
+**Decision**: The 30-second initial check delay is hardcoded rather than configurable.
+
+**Rationale**:
+1. **Consistency**: Provides uniform behavior across all deployments
+2. **Empirically validated**: Based on real-world K8s cluster observations
+3. **Rarely needs adjustment**: Pod startup times are relatively consistent
+4. **Prevents misconfiguration**: Too low = false positives, too high = poor UX
+5. **Separation of concerns**: Initial check (UX) vs timeout (infrastructure)
+
+**Trade-offs**:
+- ✅ Simpler configuration surface
+- ✅ Predictable user experience
+- ❌ Less flexibility for edge cases
+- ❌ Requires code change if adjustment needed
+
+**Future consideration**: Could add `K8S_INITIAL_CHECK_DELAY` env var if users report issues, but current evidence suggests 30 seconds works well universally.
+
 ## Meta-Learnings for Future Claude Code Instances
 
 ### Architectural Decision-Making Process
@@ -329,7 +400,23 @@ When questioning existing architecture:
 - **Timeout**: Safety limit (10 min), not polling interval
 - **Scheduling timeout**: Configurable wait for pod placement (default 5 min)
 
-### 30-Second Delay Reasoning
-- **Normal startup**: 1-5s scheduling + 10-20s image pull + startup
-- **30s threshold**: Confident it's a real problem, not normal delay
-- **Prevents false positives**: All pods start as Pending initially
+### Two-Tier Timeout Architecture
+
+**30-Second Initial Check Delay (Hardcoded)**:
+- **Implementation**: `executors.py` line 275: `if elapsed > 30:`
+- **Purpose**: Grace period before checking pod status
+- **Breakdown of normal startup times**:
+  - Pod scheduling: 1-5 seconds (K8s scheduler finding suitable node)
+  - Image pull: 10-20 seconds (if not cached on node)
+  - Container init: 2-5 seconds (process startup)
+  - **Total normal time**: ~15-25 seconds typical
+- **Why 30 seconds**: Provides safety margin, confident threshold for real problems
+- **Why hardcoded**: Consistent UX across deployments, rarely needs adjustment
+
+**300-Second Scheduling Timeout (Configurable)**:
+- **Implementation**: `K8S_SCHEDULING_TIMEOUT` env var (default 300)
+- **Purpose**: Maximum wait before declaring scheduling failure
+- **Use cases**:
+  - Autoscaling clusters may need time to provision nodes
+  - Large resource requests may wait for other pods to complete
+- **Why configurable**: Different clusters have different SLAs and scaling speeds
