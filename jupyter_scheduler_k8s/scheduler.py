@@ -9,7 +9,7 @@ import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Union
 
 from jupyter_scheduler.scheduler import Scheduler
 from jupyter_scheduler.models import (
@@ -17,6 +17,7 @@ from jupyter_scheduler.models import (
     CreateJobDefinition,
     UpdateJobDefinition,
     DescribeJobDefinition,
+    DescribeJob,
     ListJobDefinitionsQuery,
     ListJobDefinitionsResponse,
     CreateJobFromDefinition,
@@ -472,6 +473,104 @@ class K8sScheduler(Scheduler):
             s3_prefix = f"s3://{self.s3_bucket}/job-definitions/{job_definition_id}/"
             self._cleanup_s3_staging(s3_prefix)
 
+    def get_staging_paths(self, model: Union[DescribeJob, DescribeJobDefinition]) -> Dict[str, str]:
+        """Smart staging path resolution with fallback to parent for generation.
+
+        This method handles two distinct scenarios:
+        1. Path generation (job/definition creation): Uses parent's timestamp-based generation
+        2. Path discovery (file download): Finds actual files, handling timestamp mismatches
+
+        The staging directory existence serves as a natural and reliable indicator
+        of which mode we're in, avoiding complex state checking or additional parameters.
+        """
+        # For job definitions, always use parent's generation logic
+        if isinstance(model, DescribeJobDefinition):
+            return super().get_staging_paths(model)
+
+        # For jobs, determine context by staging directory existence
+        staging_dir = os.path.join(self.staging_path, model.job_id)
+
+        # Directory doesn't exist = job creation phase, need generated paths
+        if not os.path.exists(staging_dir):
+            logger.debug(f"Staging directory not found, using path generation for job {model.job_id}")
+            return super().get_staging_paths(model)
+
+        # Directory exists = download phase, discover actual files
+        # This handles timestamp mismatches between generation and execution
+        return self._discover_staging_files(staging_dir, model)
+
+    def _discover_staging_files(self, staging_dir: str, model: DescribeJob) -> Dict[str, str]:
+        """Discover actual files in staging directory by pattern matching.
+
+        Handles both simple jobs and package_input_folder jobs with side effects.
+        Maps all files found, including subdirectories and side-effect files.
+        """
+        staging_paths = {}
+
+        # Check if package_input_folder mode is enabled
+        package_mode = getattr(model, 'package_input_folder', False)
+
+        if package_mode:
+            # In package mode, discover ALL files recursively
+            logger.debug(f"Package mode: discovering all files in {staging_dir}")
+
+            for root, dirs, files in os.walk(staging_dir):
+                for filename in files:
+                    file_path = os.path.join(root, filename)
+                    # Use relative path from staging_dir as key for nested files
+                    rel_path = os.path.relpath(file_path, staging_dir)
+
+                    # Map well-known output formats to their semantic keys
+                    base_name = os.path.splitext(model.input_filename)[0]
+                    if filename == model.input_filename and root == staging_dir:
+                        staging_paths["input"] = file_path
+                    elif filename.startswith(base_name) and root == staging_dir:
+                        # Standard output files in root directory
+                        if filename.endswith('.ipynb') and filename != model.input_filename:
+                            staging_paths["ipynb"] = file_path
+                        elif filename.endswith('.html'):
+                            staging_paths["html"] = file_path
+                        elif filename.endswith('.pdf'):
+                            staging_paths["pdf"] = file_path
+                        else:
+                            # Other output formats or side-effect files
+                            staging_paths[rel_path] = file_path
+                    else:
+                        # All other files (packaged inputs, side effects, etc.)
+                        staging_paths[rel_path] = file_path
+        else:
+            # Original single-file mode
+            try:
+                files = os.listdir(staging_dir)
+            except OSError as e:
+                logger.warning(f"Failed to list staging directory {staging_dir}: {e}")
+                return staging_paths
+
+            logger.debug(f"Single-file mode: discovering files in {staging_dir}: {files}")
+
+            for filename in files:
+                file_path = os.path.join(staging_dir, filename)
+
+                # Input file: exact name match without timestamp
+                if filename == model.input_filename:
+                    staging_paths["input"] = file_path
+
+                # Output files: name prefix match with format extension
+                elif filename.startswith(os.path.splitext(model.input_filename)[0]):
+                    # Extract format from filename
+                    if filename.endswith('.ipynb') and filename != model.input_filename:
+                        staging_paths["ipynb"] = file_path
+                    elif filename.endswith('.html'):
+                        staging_paths["html"] = file_path
+                    elif filename.endswith('.pdf'):
+                        staging_paths["pdf"] = file_path
+                    # Include any other generated files as well
+                    else:
+                        staging_paths[filename] = file_path
+
+        logger.debug(f"Discovered staging paths for job {model.job_id}: {list(staging_paths.keys())}")
+        return staging_paths
+
     def get_job_definition(self, job_definition_id: str) -> DescribeJobDefinition:
         """Get a single job definition from K8s CronJob."""
         logger.debug(f"Getting job definition {job_definition_id}")
@@ -532,7 +631,7 @@ class K8sScheduler(Scheduler):
 
             # Apply pagination if needed
             total = len(definitions)
-            # TODO: Implement proper pagination with offset/limit
+            # Pagination not yet implemented for K8s backend
 
             return ListJobDefinitionsResponse(
                 job_definitions=definitions,
@@ -628,6 +727,43 @@ class K8sScheduler(Scheduler):
         return job_id
 
     # Helper methods
+
+    def add_job_files(self, model: DescribeJob):
+        """Override to handle edge cases where packaged_files might be missing.
+
+        If package_input_folder is True but packaged_files is empty/None,
+        we discover files from the staging directory. This handles:
+        - Old jobs created before we started storing packaged_files
+        - Jobs where annotation update failed
+        - Fallback discovery for robustness
+        """
+        # If package_input_folder but no packaged_files, try to discover them
+        if model.package_input_folder and not model.packaged_files:
+            staging_paths = self.get_staging_paths(model)
+            if staging_paths:
+                staging_path = staging_paths.get("input")
+                if staging_path and os.path.exists(os.path.dirname(staging_path)):
+                    staging_dir = os.path.dirname(staging_path)
+                    discovered_files = []
+
+                    # Discover all files in staging directory
+                    for root, dirs, files in os.walk(staging_dir):
+                        for filename in files:
+                            # Skip main output files (they're tracked separately)
+                            base_name = os.path.splitext(model.input_filename)[0]
+                            if filename.startswith(base_name) and root == staging_dir:
+                                continue
+
+                            file_path = os.path.join(root, filename)
+                            rel_path = os.path.relpath(file_path, staging_dir)
+                            discovered_files.append(rel_path)
+
+                    if discovered_files:
+                        model.packaged_files = discovered_files
+                        logger.debug(f"Discovered {len(discovered_files)} packaged files for job {model.job_id}")
+
+        # Call parent implementation
+        super().add_job_files(model)
 
     def _sanitize(self, value: str) -> str:
         """Sanitize value for K8s labels."""

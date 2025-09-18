@@ -8,7 +8,7 @@ import sys
 import nbformat
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 from kubernetes import client, config, watch
 
 # Configuration constants
@@ -38,9 +38,10 @@ class K8sExecutionManager(ExecutionManager):
     """Executes Jupyter Scheduler jobs as Kubernetes Jobs."""
 
     def __init__(
-        self, job_id: str, root_dir: str, db_url: str, staging_paths: Dict[str, str], database_manager_class
+        self, job_id: str, root_dir: str, db_url: str, staging_paths: Dict[str, str], database_manager_class,
+        job_data: Optional[Dict] = None
     ):
-        super().__init__(job_id, root_dir, db_url, staging_paths, database_manager_class)
+        super().__init__(job_id, root_dir, db_url, staging_paths, database_manager_class, job_data)
         
         logger.info("Initializing K8sExecutionManager")
         
@@ -107,7 +108,69 @@ class K8sExecutionManager(ExecutionManager):
             )
 
         return "Always"
-    
+
+    def before_start(self):
+        """Build model from passed job data or K8s Job."""
+        from jupyter_scheduler.models import DescribeJob
+        from jupyter_scheduler.utils import get_utc_timestamp
+
+        if self.job_data:
+            # Use passed job data for regular jobs
+            model_data = self.job_data.copy()
+            logger.debug(f"Using passed job data: name={model_data.get('name')}")
+            logger.info(f"Job data package_input_folder: {model_data.get('package_input_folder', 'NOT SET')}")
+            logger.info(f"Job data packaged_files: {len(model_data.get('packaged_files', []))} files")
+        else:
+            # Fallback for CronJob-spawned jobs (they exist as K8s Jobs already)
+            model_data = self._read_from_k8s_job()
+
+        # Ensure required fields
+        model_data.setdefault('job_id', self.job_id)
+        model_data.setdefault('url', f"/jobs/{self.job_id}")
+        model_data.setdefault('create_time', get_utc_timestamp())
+        model_data.setdefault('update_time', get_utc_timestamp())
+        model_data.setdefault('runtime_environment_name', 'default')
+        model_data.setdefault('input_filename', '')
+        model_data.setdefault('output_prefix', '')
+        model_data.setdefault('parameters', {})
+        model_data.setdefault('output_formats', [])
+        model_data.setdefault('runtime_environment_parameters', {})
+        model_data.setdefault('environment_variables', {})
+        model_data.setdefault('package_input_folder', False)
+        model_data.setdefault('packaged_files', [])
+        model_data.setdefault('job_definition_id', None)
+        model_data.setdefault('tags', [])
+        model_data.setdefault('idempotency_token', None)
+        model_data.setdefault('name', self.job_id)  # Default name to job_id
+
+        logger.info(f"Final model_data package_input_folder: {model_data.get('package_input_folder')}")
+        self._model = DescribeJob(**model_data)
+        logger.info(f"Model created with package_input_folder: {self._model.package_input_folder}")
+
+    def _read_from_k8s_job(self) -> Dict:
+        """Read job data from existing K8s Job (for CronJob-spawned jobs).
+
+        This is only used for jobs spawned by CronJobs, where the K8s Job
+        already exists with metadata in annotations.
+        """
+        # For now, return minimal data - CronJob support will implement this fully
+        return {
+            'job_id': self.job_id,
+            'name': self.job_id,
+            'runtime_environment_name': 'default',
+            'input_filename': '',
+            'output_prefix': '',
+            'parameters': {},
+            'output_formats': [],
+            'runtime_environment_parameters': {},
+            'environment_variables': {},
+            'package_input_folder': False,
+            'packaged_files': [],
+            'job_definition_id': None,
+            'tags': [],
+            'idempotency_token': None
+        }
+
     def process(self):
         """Override process to handle JobStoppedException and set STOPPED status."""
         self.before_start()
@@ -154,7 +217,11 @@ class K8sExecutionManager(ExecutionManager):
         logger.info("=== K8s ExecutionManager starting ===")
         self._init_k8s_clients()
 
-        job_name = f"nb-job-{self.job_id[:8]}"
+        # Use job_id directly if it's already a K8s name format
+        if self.job_id.startswith('nb-'):
+            job_name = self.job_id  # Already K8s name format (nb-job-* or nb-jobdef-*)
+        else:
+            job_name = f"nb-job-{self.job_id[:8]}"  # Legacy UUID format
 
         logger.info(f"Starting K8s job {job_name} in namespace {self.namespace}")
         logger.info(f"Using image: {self.image}")
@@ -215,21 +282,21 @@ class K8sExecutionManager(ExecutionManager):
             job = self._create_s3_execution_job(
                 job_name, s3_input_prefix, s3_output_prefix
             )
-            
+
             logger.info(f"🚀 Creating Kubernetes job '{job_name}' in namespace '{self.namespace}'")
             logger.info(f"    Image: {self.image}")
             logger.info(f"    Resource limits: {self.executor_memory_limit} memory, {self.executor_cpu_limit} CPU")
-            
+
             # Log environment variables summary (never log values)
             user_env_dict = self._extract_user_env_vars()
-            
+
             if user_env_dict:
                 names = sorted(user_env_dict.keys())
                 if len(names) > MAX_ENV_VARS_TO_LOG:
                     logger.info(f"    Environment variables: {len(names)} user variables configured")
                 else:
                     logger.info(f"    Environment variables: {', '.join(names)}")
-            
+
             self.k8s_batch.create_namespaced_job(namespace=self.namespace, body=job)
             logger.info(f"✅ Kubernetes job '{job_name}' created successfully")
 
@@ -239,6 +306,10 @@ class K8sExecutionManager(ExecutionManager):
 
             # Download outputs from S3
             self._download_from_s3(s3_output_prefix)
+
+            # Update packaged_files with all discovered files if package_input_folder mode
+            if getattr(self.model, 'package_input_folder', False):
+                self._update_packaged_files_annotation(job_name)
 
         finally:
             logger.info(f"🗃️  Execution job '{job_name}' preserved as database record")
@@ -489,7 +560,10 @@ class K8sExecutionManager(ExecutionManager):
             client.V1EnvVar(
                 name="PARAMETERS", value=json.dumps(self.model.parameters or {})
             ),
-            client.V1EnvVar(name="PACKAGE_INPUT_FOLDER", value="true"),
+            client.V1EnvVar(
+                name="PACKAGE_INPUT_FOLDER",
+                value=str(self.model.package_input_folder).lower() if hasattr(self.model, 'package_input_folder') else "false"
+            ),
             client.V1EnvVar(
                 name="OUTPUT_FORMATS", value=json.dumps(self.model.output_formats)
             ),
@@ -641,6 +715,8 @@ class K8sExecutionManager(ExecutionManager):
             "output_formats": getattr(self.model, 'output_formats', []),
             "create_time": getattr(self.model, 'create_time', None),
             "update_time": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            "package_input_folder": getattr(self.model, 'package_input_folder', False),
+            "packaged_files": getattr(self.model, 'packaged_files', None) or [],
             "k8s_resource_profile": getattr(self.model, 'k8s_resource_profile', ''),
             "k8s_cpu": k8s_cpu,
             "k8s_memory": k8s_memory,
@@ -665,4 +741,53 @@ class K8sExecutionManager(ExecutionManager):
         value = str(value).lower()
         value = ''.join(c if c.isalnum() or c in '-_.' else '-' for c in value)
         return value.strip('-_.')[:63] or "none"
+
+    def _update_packaged_files_annotation(self, job_name: str):
+        """Update the K8s Job annotation with discovered packaged files.
+        This captures both initially copied files and side-effect files created during execution.
+        """
+        try:
+            # Discover all files in staging directory
+            staging_path = self.staging_paths.get("ipynb") or self.staging_paths.get("input")
+            staging_dir = Path(staging_path).parent
+
+            discovered_files = []
+            input_filename = getattr(self.model, 'input_filename', '')
+
+            for root, dirs, files in os.walk(staging_dir):
+                for filename in files:
+                    # Skip the main output files (they're tracked separately)
+                    if filename.startswith(os.path.splitext(input_filename)[0]) and root == str(staging_dir):
+                        continue
+
+                    file_path = os.path.join(root, filename)
+                    # Store relative path from staging directory
+                    rel_path = os.path.relpath(file_path, staging_dir)
+                    discovered_files.append(rel_path)
+
+            logger.info(f"Discovered {len(discovered_files)} packaged/side-effect files")
+
+            # Get the K8s Job
+            job = self.k8s_batch.read_namespaced_job(
+                name=job_name,
+                namespace=self.namespace
+            )
+
+            # Update the job data annotation
+            if job.metadata.annotations and "scheduler.jupyter.org/job-data" in job.metadata.annotations:
+                job_data = json.loads(job.metadata.annotations["scheduler.jupyter.org/job-data"])
+                job_data["packaged_files"] = discovered_files
+                job.metadata.annotations["scheduler.jupyter.org/job-data"] = json.dumps(job_data)
+
+                # Patch the job with updated annotations
+                self.k8s_batch.patch_namespaced_job(
+                    name=job_name,
+                    namespace=self.namespace,
+                    body=job
+                )
+                logger.info(f"Updated job {job_name} with {len(discovered_files)} packaged files")
+
+        except Exception as e:
+            logger.warning(f"Failed to update packaged files annotation: {e}")
+            # Non-critical error, don't fail the job
 

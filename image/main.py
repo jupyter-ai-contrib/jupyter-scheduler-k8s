@@ -28,7 +28,7 @@ def main():
     # S3 configuration (optional)
     s3_input_prefix = os.environ.get('S3_INPUT_PREFIX')
     s3_output_prefix = os.environ.get('S3_OUTPUT_PREFIX')
-    
+
     # Standard configuration
     notebook_path = os.environ.get('NOTEBOOK_PATH')
     output_path = os.environ.get('OUTPUT_PATH')
@@ -37,17 +37,21 @@ def main():
     timeout = int(os.environ.get('TIMEOUT', '600'))
     package_input_folder = os.environ.get('PACKAGE_INPUT_FOLDER', 'false').lower() == 'true'
     output_formats_json = os.environ.get('OUTPUT_FORMATS', '[]')
-    
+
+    # Initialize output directory
+    local_output_dir = None
+
     # If S3 is configured, download inputs first
     if s3_input_prefix:
         logger.info("S3 mode: downloading inputs from S3")
+        logger.info(f"Package input folder mode: {package_input_folder}")
         local_input_dir = '/tmp/inputs'
         download_from_s3(s3_input_prefix, local_input_dir)
-        
+
         # Update paths to use downloaded files
         notebook_name = Path(notebook_path).name
         notebook_path = str(Path(local_input_dir) / notebook_name)
-        
+
         # Update output path to local temp directory
         output_name = Path(output_path).name
         local_output_dir = '/tmp/outputs'
@@ -97,11 +101,27 @@ def main():
         logger.info(f"Parameters: {parameters}")
         inject_parameters(nb, parameters)
     
+    # Track files before execution for package_input_folder mode
+    original_files = set()
+    if package_input_folder and s3_input_prefix:
+        # In S3 package mode, track original files to identify side effects
+        for root, dirs, files in os.walk(execution_dir):
+            for file in files:
+                original_files.add(os.path.relpath(os.path.join(root, file), execution_dir))
+        logger.info(f"Tracked {len(original_files)} original files before execution")
+
     execute_notebook(nb, execution_dir, kernel_name, timeout)
     save_notebook(nb, output_path)
-    
+
     generate_output_formats(nb, output_path, output_formats)
-    
+
+    # Capture side-effect files in package_input_folder mode
+    if package_input_folder and s3_input_prefix and local_output_dir:
+        logger.info("Capturing side-effect files created during execution")
+        logger.info(f"Execution dir: {execution_dir}")
+        logger.info(f"Output dir: {local_output_dir}")
+        capture_side_effects(execution_dir, local_output_dir, original_files)
+
     if s3_output_prefix:
         logger.info("S3 mode: uploading outputs to S3")
         upload_to_s3(local_output_dir, s3_output_prefix)
@@ -226,6 +246,45 @@ def download_from_s3(s3_prefix, local_dir):
         sys.exit(1)
     
     logger.info("S3 download completed")
+
+
+def capture_side_effects(execution_dir, output_dir, original_files):
+    """Capture side-effect files created during notebook execution.
+
+    Copies any new files created during execution from the execution
+    directory to the output directory, preserving directory structure.
+    """
+    new_files_count = 0
+
+    for root, dirs, files in os.walk(execution_dir):
+        for file in files:
+            file_path = os.path.join(root, file)
+            rel_path = os.path.relpath(file_path, execution_dir)
+
+            # Skip if this was an original file
+            if rel_path in original_files:
+                continue
+
+            # Skip if it's the notebook output (already in output_dir)
+            if file_path.startswith(output_dir):
+                continue
+
+            # This is a new side-effect file, copy it to output dir
+            dest_path = os.path.join(output_dir, rel_path)
+            dest_dir = os.path.dirname(dest_path)
+
+            # Create destination directory if needed
+            if dest_dir:
+                Path(dest_dir).mkdir(parents=True, exist_ok=True)
+
+            shutil.copy2(file_path, dest_path)
+            logger.info(f"Captured side-effect file: {rel_path}")
+            new_files_count += 1
+
+    if new_files_count > 0:
+        logger.info(f"Captured {new_files_count} side-effect files")
+    else:
+        logger.info("No side-effect files detected")
 
 
 def upload_to_s3(local_dir, s3_prefix):

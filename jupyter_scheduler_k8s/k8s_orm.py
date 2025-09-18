@@ -18,6 +18,9 @@ class K8sSession:
     We implement the session interface for compatibility with jupyter-scheduler.
     """
 
+    # Class-level flag to track if we've logged the connection type
+    _connection_logged = False
+
     def __init__(self, namespace: str = "default"):
         self.namespace = namespace
         self._init_k8s_client()
@@ -26,11 +29,16 @@ class K8sSession:
         """Initialize K8s client."""
         try:
             config.load_incluster_config()
-            logger.info("🔗 K8sSession: Using in-cluster K8s configuration")
+            if not K8sSession._connection_logged:
+                logger.info("Using in-cluster K8s configuration")
+                K8sSession._connection_logged = True
         except config.ConfigException:
             try:
                 config.load_kube_config()
-                logger.info("🔗 K8sSession: Using kubeconfig K8s configuration")
+                # Only log once per process lifetime
+                if not K8sSession._connection_logged:
+                    logger.info("Using kubeconfig K8s configuration")
+                    K8sSession._connection_logged = True
             except Exception as e:
                 logger.error(f"❌ Failed to load K8s configuration: {e}")
                 raise RuntimeError(
@@ -74,73 +82,27 @@ class K8sSession:
         # Check what type of object this is
         if hasattr(job_model, 'job_id'):
             # It's a Job - create K8s Job
-            logger.info(f"K8sSession: Creating K8s Job for job_id={job_model.job_id}")
+            if job_model.job_id is None:
+                # Generate UUID for job_id (internal identifier)
+                job_model.job_id = str(uuid.uuid4())
+                logger.info(f"✅ K8sSession: Generated job_id={job_model.job_id}")
 
-            job_name = f"nb-job-{job_model.job_id[:8]}"
+            # Ensure required fields on model
+            if not hasattr(job_model, 'create_time') or job_model.create_time is None:
+                job_model.create_time = get_utc_timestamp()
 
-            # Convert model attributes to dict for storage
-            job_data = {}
-            for attr in dir(job_model):
-                if not attr.startswith('_') and not callable(getattr(job_model, attr)):
-                    value = getattr(job_model, attr)
-                    # Convert datetime objects to strings
-                    if hasattr(value, 'isoformat'):
-                        value = value.isoformat()
-                    job_data[attr] = value
+            if not hasattr(job_model, 'update_time') or job_model.update_time is None:
+                job_model.update_time = get_utc_timestamp()
 
-            # Ensure required fields
-            if 'create_time' not in job_data:
-                job_data['create_time'] = get_utc_timestamp()
-            if 'update_time' not in job_data:
-                job_data['update_time'] = get_utc_timestamp()
-            if 'url' not in job_data:
-                job_data['url'] = f"/jobs/{job_data.get('job_id', 'unknown')}"
+            if not hasattr(job_model, 'url') or job_model.url is None:
+                job_model.url = f"/jobs/{job_model.job_id}"
 
-            # Create K8s Job with metadata in annotations/labels
-            k8s_job = client.V1Job(
-                metadata=client.V1ObjectMeta(
-                    name=job_name,
-                    namespace=self.namespace,
-                    labels={
-                        "app.kubernetes.io/managed-by": "jupyter-scheduler-k8s",
-                        "scheduler.jupyter.org/job-id": self._sanitize(str(job_model.job_id)),
-                        "scheduler.jupyter.org/status": self._sanitize(str(getattr(job_model, 'status', 'PENDING'))),
-                        "scheduler.jupyter.org/name": self._sanitize(str(getattr(job_model, 'name', 'unnamed')))
-                    },
-                    annotations={
-                        "scheduler.jupyter.org/job-data": json.dumps(job_data)
-                    }
-                ),
-                spec=client.V1JobSpec(
-                    template=client.V1PodTemplateSpec(
-                        spec=client.V1PodSpec(
-                            restart_policy="Never",
-                            containers=[
-                                client.V1Container(
-                                    name="placeholder",
-                                    image="busybox:latest",
-                                    command=["echo", "Job record created"]
-                                )
-                            ]
-                        )
-                    ),
-                    backoff_limit=0,
-                    ttl_seconds_after_finished=None  # Keep forever as database record
-                )
-            )
+            if not hasattr(job_model, 'status') or job_model.status is None:
+                job_model.status = 'CREATED'
 
-            try:
-                self.k8s_batch.create_namespaced_job(
-                    namespace=self.namespace,
-                    body=k8s_job
-                )
-                logger.info(f"✅ Created K8s Job {job_name} as database record")
-            except ApiException as e:
-                if e.status == 409:
-                    logger.warning(f"K8s Job {job_name} already exists")
-                else:
-                    logger.error(f"Failed to create K8s Job: {e}")
-                    raise
+            # No-op for regular jobs - ExecutionManager will create the K8s Job
+            # ExecutionManager will receive job data through constructor
+            logger.info(f"K8sSession: Job {job_model.job_id} registered (will be created by ExecutionManager)")
 
         elif hasattr(job_model, 'job_definition_id'):
             # It's a JobDefinition - create K8s CronJob
@@ -178,15 +140,32 @@ class K8sQuery:
         self._offset = None
         self._order_by_fields = []
 
-        # Note: K8sQuery only handles Jobs (K8s Job resources)
-        # JobDefinitions are handled differently as CronJobs by K8sScheduler
+        # Note: K8sQuery handles both Jobs and JobDefinitions
+        # Jobs are K8s Job resources, JobDefinitions are K8s CronJobs
+        self._is_job_definition_query = (
+            hasattr(model_class, '__name__') and
+            model_class.__name__ == 'JobDefinition'
+        )
         
     def filter(self, condition):
         """Add filter condition."""
         # Convert SQLAlchemy conditions to K8s label selectors
         if hasattr(condition, 'left') and hasattr(condition.left, 'name'):
             field_name = condition.left.name
-            value = getattr(condition.right, 'value', condition.right)
+
+            # Extract the actual value from SQLAlchemy expressions
+            if hasattr(condition.right, 'value'):
+                value = condition.right.value
+            elif hasattr(condition.right, 'element'):
+                # Handle bindparam and other wrapped types
+                value = condition.right.element.value if hasattr(condition.right.element, 'value') else condition.right
+            else:
+                value = condition.right
+
+            # Special handling for None comparisons (e.g., schedule != None)
+            # SQLAlchemy uses special None_ type which we need to convert
+            if value is None or str(type(value).__name__) == 'NoneType':
+                value = None
 
             # Map queryable fields to labels for exact matches
             if field_name in ['job_id', 'status', 'name', 'job_definition_id', 'idempotency_token']:
@@ -233,7 +212,10 @@ class K8sQuery:
         return self
 
     def count(self):
-        """Return count of matching jobs."""
+        """Return count of matching results."""
+        if self._is_job_definition_query:
+            definitions = self._get_matching_job_definitions()
+            return len(definitions)
         jobs = self._get_matching_jobs()
         return len(jobs)
 
@@ -312,7 +294,11 @@ class K8sQuery:
         return result
         
     def first(self):
-        """Get first matching job."""
+        """Get first matching result."""
+        if self._is_job_definition_query:
+            definitions = self._get_matching_job_definitions()
+            return definitions[0] if definitions else None
+
         # Optimization: If querying by job_id only, try direct K8s name lookup first
         if self._label_filters.get("scheduler.jupyter.org/job-id") and len(self._label_filters) == 1:
             job_id = self._label_filters["scheduler.jupyter.org/job-id"]
@@ -339,7 +325,9 @@ class K8sQuery:
         return jobs[0] if jobs else None
         
     def all(self):
-        """Get all matching jobs."""
+        """Get all matching results."""
+        if self._is_job_definition_query:
+            return self._get_matching_job_definitions()
         return self._get_matching_jobs()
     
     def delete(self):
@@ -394,12 +382,17 @@ class K8sQuery:
         # Use labels for efficient server-side filtering
         label_selector = ",".join([f"{k}={v}" for k, v in self._label_filters.items()])
 
-        logger.debug(f"K8sQuery: Querying jobs with label_selector: {label_selector or 'None'}")
+        # When no filters specified, query ALL managed jobs (including CronJob-spawned)
+        # This ensures we find jobs that don't have job-id labels (e.g., CronJob-spawned)
+        if not label_selector:
+            label_selector = "app.kubernetes.io/managed-by=jupyter-scheduler-k8s"
+
+        logger.debug(f"K8sQuery: Querying jobs with label_selector: {label_selector}")
         logger.debug(f"K8sQuery: Post-filters: {self._filters}")
 
         jobs = self.session.k8s_batch.list_namespaced_job(
             namespace=self.session.namespace,
-            label_selector=label_selector if label_selector else None
+            label_selector=label_selector
         )
 
         logger.debug(f"K8sQuery: Found {len(jobs.items)} K8s jobs matching labels")
@@ -456,7 +449,8 @@ class K8sQuery:
         # Apply ordering if specified
         if self._order_by_fields:
             for field_name, is_desc in reversed(self._order_by_fields):
-                results.sort(key=lambda x: getattr(x, field_name, ''), reverse=is_desc)
+                # Use a default value that works for sorting (0 for numbers, empty string for text)
+                results.sort(key=lambda x: getattr(x, field_name, None) or 0, reverse=is_desc)
 
         # Apply offset and limit for pagination
         if self._offset is not None:
@@ -496,9 +490,54 @@ class K8sQuery:
     
     def _dict_to_job(self, job_data: Dict):
         """Convert dict to Job-like object."""
+        from jupyter_scheduler.utils import get_utc_timestamp
+
+        # Ensure required fields have default values for old jobs
+        if not job_data.get('create_time'):
+            job_data['create_time'] = get_utc_timestamp()
+        if not job_data.get('update_time'):
+            job_data['update_time'] = get_utc_timestamp()
+        if not job_data.get('url'):
+            job_data['url'] = f"/jobs/{job_data.get('job_id', 'unknown')}"
+        if not job_data.get('status'):
+            job_data['status'] = 'CREATED'
+
         class JobRecord:
             def __init__(self, data):
                 for k, v in data.items():
                     setattr(self, k, v)
-        
+
         return JobRecord(job_data)
+
+    def _get_matching_job_definitions(self):
+        """Get matching JobDefinitions from K8s CronJobs."""
+        try:
+            # Get all CronJobs managed by jupyter-scheduler-k8s
+            label_selector = "app.kubernetes.io/managed-by=jupyter-scheduler-k8s"
+
+            cronjobs = self.session.k8s_batch.list_namespaced_cron_job(
+                namespace=self.session.namespace,
+                label_selector=label_selector
+            )
+
+            definitions = []
+            for cronjob in cronjobs.items:
+                # Extract JobDefinition data from CronJob annotations
+                if cronjob.metadata.annotations and "scheduler.jupyter.org/job-definition-data" in cronjob.metadata.annotations:
+                    job_def_data = json.loads(cronjob.metadata.annotations["scheduler.jupyter.org/job-definition-data"])
+
+                    # Apply post-filters if needed (e.g., schedule != None)
+                    if self._matches_post_filters(job_def_data):
+                        # Convert to JobDefinition-like object
+                        class JobDefinitionRecord:
+                            def __init__(self, data):
+                                for k, v in data.items():
+                                    setattr(self, k, v)
+
+                        definitions.append(JobDefinitionRecord(job_def_data))
+
+            return definitions
+
+        except Exception as e:
+            logger.error(f"Failed to query JobDefinitions: {e}")
+            return []
