@@ -118,11 +118,19 @@ class K8sExecutionManager(ExecutionManager):
             # Use passed job data for regular jobs
             model_data = self.job_data.copy()
             logger.debug(f"Using passed job data: name={model_data.get('name')}")
-            logger.info(f"Job data package_input_folder: {model_data.get('package_input_folder', 'NOT SET')}")
-            logger.info(f"Job data packaged_files: {len(model_data.get('packaged_files', []))} files")
         else:
             # Fallback for CronJob-spawned jobs (they exist as K8s Jobs already)
             model_data = self._read_from_k8s_job()
+
+        # Log package_input_folder and packaged_files, handling None explicitly
+        package_input_folder = model_data.get('package_input_folder')
+        packaged_files = model_data.get('packaged_files')
+
+        logger.info(f"Job data package_input_folder: {package_input_folder}")
+        if packaged_files is not None:
+            logger.info(f"Job data packaged_files: {len(packaged_files)} files")
+        else:
+            logger.info(f"Job data packaged_files: None (not specified)")
 
         # Ensure required fields
         model_data.setdefault('job_id', self.job_id)
@@ -136,6 +144,8 @@ class K8sExecutionManager(ExecutionManager):
         model_data.setdefault('output_formats', [])
         model_data.setdefault('runtime_environment_parameters', {})
         model_data.setdefault('environment_variables', {})
+        # Note: setdefault won't replace None values, only missing keys
+        # If upstream passes None explicitly, we preserve it
         model_data.setdefault('package_input_folder', False)
         model_data.setdefault('packaged_files', [])
         model_data.setdefault('job_definition_id', None)
@@ -562,7 +572,7 @@ class K8sExecutionManager(ExecutionManager):
             ),
             client.V1EnvVar(
                 name="PACKAGE_INPUT_FOLDER",
-                value=str(self.model.package_input_folder).lower() if hasattr(self.model, 'package_input_folder') else "false"
+                value="true" if getattr(self.model, 'package_input_folder', False) else "false"
             ),
             client.V1EnvVar(
                 name="OUTPUT_FORMATS", value=json.dumps(self.model.output_formats)

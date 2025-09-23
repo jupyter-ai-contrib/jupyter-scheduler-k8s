@@ -9,7 +9,7 @@ import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from jupyter_scheduler.scheduler import Scheduler
 from jupyter_scheduler.models import (
@@ -72,7 +72,8 @@ class K8sScheduler(Scheduler):
         self._k8s_core = None
         self.namespace = os.environ.get("K8S_NAMESPACE", "default")
         self.s3_bucket = os.environ.get("S3_BUCKET")
-        
+        self.s3_endpoint_url = os.environ.get("S3_ENDPOINT_URL")
+
     def _init_k8s_clients(self):
         """Initialize Kubernetes API clients."""
         if self._k8s_batch is not None:
@@ -190,7 +191,115 @@ class K8sScheduler(Scheduler):
             else:
                 logger.error(f"Failed to stop job {job_id}: {e}")
                 raise
-                
+
+    def get_job(self, job_id: str, job_files: bool = True) -> DescribeJob:
+        """Get job with lazy file discovery for completed jobs.
+
+        Refreshes packaged_files from K8s annotations before adding files.
+        This ensures CronJob-spawned jobs can download files correctly.
+        """
+        # Get base job without files
+        job = super().get_job(job_id, job_files=False)
+
+        # Always refresh packaged_files from K8s to get current state
+        self._refresh_job_from_k8s(job)
+
+        # Add job files if requested
+        if job_files:
+            self.add_job_files(job)
+
+        return job
+
+    def _refresh_job_from_k8s(self, model: DescribeJob):
+        """Update model with current K8s annotation data.
+
+        This ensures we always have the latest packaged_files list,
+        which may have been updated after job completion.
+        """
+        try:
+            self._init_k8s_clients()
+
+            # Determine K8s job name
+            if model.job_id.startswith("nb-"):
+                # CronJob-spawned job - job_id IS the K8s name
+                job_name = model.job_id
+            else:
+                # Regular job - use nb-job- prefix
+                job_name = f"nb-job-{model.job_id[:8]}"
+
+            # Get K8s job
+            k8s_job = self._k8s_batch.read_namespaced_job(
+                name=job_name,
+                namespace=self.namespace
+            )
+
+            # Extract and update packaged_files
+            if k8s_job.metadata.annotations:
+                job_data = json.loads(
+                    k8s_job.metadata.annotations.get("scheduler.jupyter.org/job-data", "{}")
+                )
+                # Update model with current packaged_files
+                model.packaged_files = job_data.get("packaged_files", [])
+                logger.debug(f"Refreshed packaged_files for job {model.job_id}: {len(model.packaged_files)} files")
+
+        except Exception as e:
+            logger.warning(f"Could not refresh job data from K8s: {e}")
+            # Graceful degradation - continue with existing data
+
+    def _download_cronjob_files_from_s3(self, model: DescribeJob):
+        """Download files from S3 for CronJob-spawned jobs.
+
+        CronJob-spawned jobs don't have local staging directories because they
+        weren't created through the normal create_job flow. We need to download
+        their files from S3 before we can serve them to the UI.
+        """
+        try:
+            # Get job definition ID from the job name pattern
+            # Format: nb-jobdef-{job_def_id[:8]}-{timestamp}
+            parts = model.job_id.split("-")
+            if len(parts) >= 3 and parts[0] == "nb" and parts[1] == "jobdef":
+                job_def_id_prefix = parts[2]
+
+                # Get K8s job to extract the full job definition ID from annotations
+                self._init_k8s_clients()
+                k8s_job = self._k8s_batch.read_namespaced_job(
+                    name=model.job_id, namespace=self.namespace
+                )
+
+                job_data = json.loads(
+                    k8s_job.metadata.annotations.get("scheduler.jupyter.org/job-data", "{}")
+                )
+                job_definition_id = job_data.get("job_definition_id")
+
+                if job_definition_id:
+                    # Construct S3 path for CronJob-spawned jobs
+                    # CronJob jobs now upload to: s3://bucket/jobs/{job_id}/
+                    s3_output_prefix = f"s3://{self.s3_bucket}/jobs/{model.job_id}/"
+
+                    # Create staging directory
+                    staging_dir = os.path.join(self.staging_path, model.job_id)
+                    os.makedirs(staging_dir, exist_ok=True)
+
+                    # Download from S3
+                    logger.info(f"Downloading CronJob files from S3 for job {model.job_id}")
+                    logger.info(f"  S3 path: {s3_output_prefix}")
+                    logger.info(f"  Local path: {staging_dir}")
+
+                    cmd = ["aws", "s3", "sync", s3_output_prefix, staging_dir, "--quiet"]
+
+                    if hasattr(self, 's3_endpoint_url') and self.s3_endpoint_url:
+                        cmd.extend(["--endpoint-url", self.s3_endpoint_url])
+
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        logger.error(f"Failed to download from S3: {result.stderr}")
+                    else:
+                        logger.info(f"Successfully downloaded files for CronJob job {model.job_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to download CronJob files from S3: {e}")
+            # Continue without files - UI will show empty directory
+
     def delete_job(self, job_id: str):
         """Delete a job record and clean up resources.
 
@@ -254,14 +363,14 @@ class K8sScheduler(Scheduler):
 
         # Stage files to S3 (one-time copy for all future runs)
         s3_staging_prefix = f"s3://{self.s3_bucket}/job-definitions/{job_definition_id}/"
-        self._stage_files_for_definition(model, s3_staging_prefix, job_definition_id)
+        packaged_files = self._stage_files_for_definition(model, s3_staging_prefix, job_definition_id)
 
         # Convert day names to numbers for K8s cron format
         cron_schedule = self._convert_schedule_to_cron(model.schedule)
 
-        # Create pod template from model
+        # Create pod template from model (now includes packaged_files)
         pod_template = self._create_pod_template_for_definition(
-            model, job_definition_id, s3_staging_prefix
+            model, job_definition_id, s3_staging_prefix, packaged_files
         )
 
         # Create CronJob
@@ -330,7 +439,8 @@ class K8sScheduler(Scheduler):
                                 "update_time": get_utc_timestamp(),
                                 "start_time": get_utc_timestamp(),  # Job starts when created
                                 "s3_staging_prefix": s3_staging_prefix,
-                                "package_input_folder": model.package_input_folder
+                                "package_input_folder": model.package_input_folder,
+                                "packaged_files": packaged_files if packaged_files else []
                             })
                         }
                     ),
@@ -474,11 +584,12 @@ class K8sScheduler(Scheduler):
             self._cleanup_s3_staging(s3_prefix)
 
     def get_staging_paths(self, model: Union[DescribeJob, DescribeJobDefinition]) -> Dict[str, str]:
-        """Smart staging path resolution with fallback to parent for generation.
+        """Smart staging path resolution with S3 awareness for CronJob jobs.
 
-        This method handles two distinct scenarios:
+        This method handles three distinct scenarios:
         1. Path generation (job/definition creation): Uses parent's timestamp-based generation
         2. Path discovery (file download): Finds actual files, handling timestamp mismatches
+        3. CronJob-spawned jobs: Downloads from S3 first, then discovers files
 
         The staging directory existence serves as a natural and reliable indicator
         of which mode we're in, avoiding complex state checking or additional parameters.
@@ -489,6 +600,15 @@ class K8sScheduler(Scheduler):
 
         # For jobs, determine context by staging directory existence
         staging_dir = os.path.join(self.staging_path, model.job_id)
+
+        # Special handling for CronJob-spawned jobs
+        if model.job_id.startswith("nb-jobdef-") and not os.path.exists(staging_dir):
+            logger.info(f"CronJob-spawned job {model.job_id} - triggering S3 download")
+            # Download from S3 first
+            self._download_cronjob_files_from_s3(model)
+            # Now discover the downloaded files
+            if os.path.exists(staging_dir):
+                return self._discover_staging_files(staging_dir, model)
 
         # Directory doesn't exist = job creation phase, need generated paths
         if not os.path.exists(staging_dir):
@@ -554,19 +674,36 @@ class K8sScheduler(Scheduler):
                 # Input file: exact name match without timestamp
                 if filename == model.input_filename:
                     staging_paths["input"] = file_path
+                    continue
 
-                # Output files: name prefix match with format extension
-                elif filename.startswith(os.path.splitext(model.input_filename)[0]):
-                    # Extract format from filename
-                    if filename.endswith('.ipynb') and filename != model.input_filename:
+                # Handle output files with timestamps
+                # Pattern: {basename}-YYYY-MM-DD-HH-MM-SS-AM/PM.{ext}
+                base_name = os.path.splitext(model.input_filename)[0]
+                timestamp_pattern = r'-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-(AM|PM)'
+
+                # Check if this file matches the basename and has timestamp
+                if filename.startswith(base_name) and re.search(timestamp_pattern, filename):
+                    # This is an output file with timestamp
+                    # Extract extension and map to semantic key
+                    _, ext = os.path.splitext(filename)
+                    ext = ext.lower().lstrip('.')
+
+                    if ext == 'ipynb':
                         staging_paths["ipynb"] = file_path
-                    elif filename.endswith('.html'):
+                    elif ext == 'html':
                         staging_paths["html"] = file_path
-                    elif filename.endswith('.pdf'):
+                    elif ext == 'pdf':
                         staging_paths["pdf"] = file_path
-                    # Include any other generated files as well
+                    elif ext == 'md':
+                        staging_paths["md"] = file_path
+                    elif ext == 'tex':
+                        staging_paths["latex"] = file_path
+                    elif ext == 'py':
+                        staging_paths["script"] = file_path
+                    # Add more format mappings as needed
                     else:
-                        staging_paths[filename] = file_path
+                        # Generic format key
+                        staging_paths[ext] = file_path
 
         logger.debug(f"Discovered staging paths for job {model.job_id}: {list(staging_paths.keys())}")
         return staging_paths
@@ -794,10 +931,13 @@ class K8sScheduler(Scheduler):
 
 
     def _stage_files_for_definition(self, model: CreateJobDefinition, s3_prefix: str, job_definition_id: str):
-        """Stage input files to S3 for job definition."""
+        """Stage input files to S3 for job definition and return list of staged files."""
         # Create local staging directory
         local_staging_dir = Path(self.staging_path) / job_definition_id
         local_staging_dir.mkdir(parents=True, exist_ok=True)
+
+        # Track staged files for package_input_folder
+        packaged_files = []
 
         try:
             # Copy input file(s) to staging
@@ -807,6 +947,14 @@ class K8sScheduler(Scheduler):
                 # Copy entire directory
                 logger.debug(f"Copying directory {input_path.parent} to {local_staging_dir}")
                 shutil.copytree(input_path.parent, local_staging_dir, dirs_exist_ok=True)
+
+                # Track all files that were copied
+                for file_path in local_staging_dir.rglob('*'):
+                    if file_path.is_file():
+                        rel_path = str(file_path.relative_to(local_staging_dir))
+                        packaged_files.append(rel_path)
+
+                logger.info(f"Tracked {len(packaged_files)} files for job definition")
             else:
                 # Copy single file
                 logger.debug(f"Copying file {input_path} to {local_staging_dir}")
@@ -825,6 +973,9 @@ class K8sScheduler(Scheduler):
                 raise RuntimeError(f"Failed to upload to S3: {result.stderr}")
 
             logger.debug(f"Staged files to {s3_prefix}")
+
+            # Return the list of staged files
+            return packaged_files
 
         finally:
             # Clean up local staging
@@ -926,16 +1077,24 @@ class K8sScheduler(Scheduler):
         self,
         model: CreateJobDefinition,
         job_definition_id: str,
-        s3_staging_prefix: str
+        s3_staging_prefix: str,
+        packaged_files: List[str] = None
     ) -> client.V1PodTemplateSpec:
         """Create pod template for CronJob from job definition model."""
 
         # Build environment variables
+        # For CronJobs, we use a special marker that the container will detect
+        # Extract base name from input filename for output naming
+        input_basename = os.path.splitext(model.input_filename)[0]
+
         env_vars = [
             client.V1EnvVar(name="S3_INPUT_PREFIX", value=s3_staging_prefix),
-            client.V1EnvVar(name="S3_OUTPUT_PREFIX", value=f"s3://{self.s3_bucket}/job-outputs/"),  # Will be unique per job
+            # Use a special marker for CronJob-spawned jobs
+            client.V1EnvVar(name="S3_OUTPUT_PREFIX", value="CRONJOB_DYNAMIC"),
+            client.V1EnvVar(name="S3_BUCKET", value=self.s3_bucket),
             client.V1EnvVar(name="NOTEBOOK_PATH", value=f"/tmp/inputs/{model.input_filename}"),
-            client.V1EnvVar(name="OUTPUT_PATH", value=f"/tmp/outputs/output.ipynb"),  # Will be timestamped
+            # Use input basename for output naming (container will add timestamp)
+            client.V1EnvVar(name="OUTPUT_PATH", value=f"/tmp/outputs/{input_basename}.ipynb"),
             client.V1EnvVar(name="PARAMETERS", value=json.dumps(model.parameters or {})),
             client.V1EnvVar(name="PACKAGE_INPUT_FOLDER", value="true" if model.package_input_folder else "false"),
             client.V1EnvVar(name="OUTPUT_FORMATS", value=json.dumps(model.output_formats or ["ipynb"]))

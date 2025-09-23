@@ -10,6 +10,8 @@ import json
 import logging
 import shutil
 import subprocess
+import re
+from datetime import datetime
 from pathlib import Path
 
 import nbformat
@@ -23,11 +25,71 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def get_job_name_from_k8s():
+    """Get the current job name from Kubernetes downward API."""
+    try:
+        # Try to read from the downward API file
+        # This requires the pod to have the appropriate volume mount
+        with open('/etc/podinfo/labels', 'r') as f:
+            labels = f.read()
+            for line in labels.split('\n'):
+                if line.startswith('job-name='):
+                    return line.split('=', 1)[1].strip('"')
+    except:
+        pass
+
+    # Fallback: use hostname which is usually the pod name
+    hostname = os.environ.get('HOSTNAME', '')
+    if hostname:
+        # Pod name format: job-name-xxxxx
+        # Extract job name by removing the last suffix
+        parts = hostname.rsplit('-', 1)
+        if len(parts) > 1:
+            return parts[0]
+
+    return None
+
+def add_timestamp_to_path(path):
+    """Add timestamp to path if it doesn't already have one.
+
+    This matches jupyter-scheduler's timestamp format:
+    {basename}-{YYYY-MM-DD-HH-MM-SS-AM/PM}.{ext}
+    """
+    path = Path(path)
+    basename = path.stem
+    ext = path.suffix
+
+    # Check if already has timestamp pattern
+    # Pattern: -YYYY-MM-DD-HH-MM-SS-AM/PM at the end of basename
+    timestamp_pattern = r'-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-(AM|PM)$'
+    if re.search(timestamp_pattern, basename):
+        return str(path)  # Already has timestamp
+
+    # Generate timestamp in jupyter-scheduler format
+    now = datetime.now()
+    timestamp = now.strftime('%Y-%m-%d-%I-%M-%S-%p')
+
+    # Construct new path with timestamp
+    new_basename = f"{basename}-{timestamp}"
+    return str(path.parent / f"{new_basename}{ext}")
+
+
 def main():
     """Execute a notebook based on environment variables."""
     # S3 configuration (optional)
     s3_input_prefix = os.environ.get('S3_INPUT_PREFIX')
     s3_output_prefix = os.environ.get('S3_OUTPUT_PREFIX')
+
+    # Handle CronJob dynamic path
+    if s3_output_prefix == 'CRONJOB_DYNAMIC':
+        s3_bucket = os.environ.get('S3_BUCKET')
+        job_name = get_job_name_from_k8s()
+        if job_name and s3_bucket:
+            s3_output_prefix = f"s3://{s3_bucket}/jobs/{job_name}/"
+            logger.info(f"CronJob mode: using dynamic S3 path {s3_output_prefix}")
+        else:
+            logger.warning("CronJob mode but couldn't determine job name")
+            s3_output_prefix = None
 
     # Standard configuration
     notebook_path = os.environ.get('NOTEBOOK_PATH')
@@ -37,6 +99,11 @@ def main():
     timeout = int(os.environ.get('TIMEOUT', '600'))
     package_input_folder = os.environ.get('PACKAGE_INPUT_FOLDER', 'false').lower() == 'true'
     output_formats_json = os.environ.get('OUTPUT_FORMATS', '[]')
+
+    # Add timestamp to output path if needed (for CronJob jobs)
+    if output_path:
+        output_path = add_timestamp_to_path(output_path)
+        logger.info(f"Using output path: {output_path}")
 
     # Initialize output directory
     local_output_dir = None
@@ -114,6 +181,14 @@ def main():
     save_notebook(nb, output_path)
 
     generate_output_formats(nb, output_path, output_formats)
+
+    # Copy original notebook to output directory for S3 upload
+    if s3_input_prefix and local_output_dir and notebook_path:
+        original_notebook_name = Path(notebook_path).name
+        original_notebook_dest = Path(local_output_dir) / original_notebook_name
+        if Path(notebook_path).exists() and not original_notebook_dest.exists():
+            shutil.copy2(notebook_path, original_notebook_dest)
+            logger.info(f"Copied original notebook: {original_notebook_name}")
 
     # Capture side-effect files in package_input_folder mode
     if package_input_folder and s3_input_prefix and local_output_dir:

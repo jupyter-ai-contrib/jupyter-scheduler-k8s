@@ -412,6 +412,14 @@ class K8sQuery:
                     # Also update the URL to match
                     job_data['url'] = f"/jobs/{job.metadata.name}"
 
+                    # Use K8s creationTimestamp for accurate timing instead of static template values
+                    if job.metadata.creation_timestamp:
+                        timestamp_ms = int(job.metadata.creation_timestamp.timestamp() * 1000)
+                        job_data['create_time'] = timestamp_ms
+                        job_data['update_time'] = timestamp_ms
+                        job_data['start_time'] = timestamp_ms
+                        logger.debug(f"K8sQuery: Updated timestamps from K8s creationTimestamp: {timestamp_ms}")
+
                 # Ensure url field is present (required for DescribeJob)
                 elif not job_data.get('url'):
                     job_data['url'] = f"/jobs/{job_data.get('job_id', '')}"

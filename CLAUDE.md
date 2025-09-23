@@ -266,6 +266,7 @@ The K8s backend supports Kubernetes CronJobs for scheduled job definitions:
 - **ImagePullPolicy Detection**: Based on K8s context, not KUBECONFIG env var
 - **Job Naming**: Derives from CronJob name + unique suffix
 - **Status Updates**: K8s Job status overrides annotation values
+- **Dynamic Timestamps**: CronJob-spawned jobs use K8s creationTimestamp for accurate timing (k8s_orm.py:416-421)
 
 ### Critical Configuration Lessons
 
