@@ -10,6 +10,8 @@ import json
 import logging
 import shutil
 import subprocess
+import re
+from datetime import datetime
 from pathlib import Path
 
 import nbformat
@@ -23,47 +25,53 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def download_from_s3(s3_prefix, local_dir):
-    """Download files from S3 to local directory."""
-    logger.info(f"Downloading from {s3_prefix} to {local_dir}")
-    
-    # Create local directory if it doesn't exist
-    Path(local_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Use AWS CLI to sync from S3
-    cmd = ['aws', 's3', 'sync', s3_prefix, local_dir, '--quiet']
-    
-    # Add endpoint URL if specified (for S3-compatible storage like MinIO)
-    endpoint_url = os.environ.get('S3_ENDPOINT_URL')
-    if endpoint_url:
-        cmd.extend(['--endpoint-url', endpoint_url])
-    
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"S3 download failed: {result.stderr}")
-        sys.exit(1)
-    
-    logger.info("S3 download completed")
+def get_job_name_from_k8s():
+    """Get the current job name from Kubernetes downward API."""
+    try:
+        # Try to read from the downward API file
+        # This requires the pod to have the appropriate volume mount
+        with open('/etc/podinfo/labels', 'r') as f:
+            labels = f.read()
+            for line in labels.split('\n'):
+                if line.startswith('job-name='):
+                    return line.split('=', 1)[1].strip('"')
+    except:
+        pass
 
+    # Fallback: use hostname which is usually the pod name
+    hostname = os.environ.get('HOSTNAME', '')
+    if hostname:
+        # Pod name format: job-name-xxxxx
+        # Extract job name by removing the last suffix
+        parts = hostname.rsplit('-', 1)
+        if len(parts) > 1:
+            return parts[0]
 
-def upload_to_s3(local_dir, s3_prefix):
-    """Upload files from local directory to S3."""
-    logger.info(f"Uploading from {local_dir} to {s3_prefix}")
-    
-    # Use AWS CLI to sync to S3
-    cmd = ['aws', 's3', 'sync', local_dir, s3_prefix, '--quiet']
-    
-    # Add endpoint URL if specified
-    endpoint_url = os.environ.get('S3_ENDPOINT_URL')
-    if endpoint_url:
-        cmd.extend(['--endpoint-url', endpoint_url])
-    
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"S3 upload failed: {result.stderr}")
-        sys.exit(1)
-    
-    logger.info("S3 upload completed")
+    return None
+
+def add_timestamp_to_path(path):
+    """Add timestamp to path if it doesn't already have one.
+
+    This matches jupyter-scheduler's timestamp format:
+    {basename}-{YYYY-MM-DD-HH-MM-SS-AM/PM}.{ext}
+    """
+    path = Path(path)
+    basename = path.stem
+    ext = path.suffix
+
+    # Check if already has timestamp pattern
+    # Pattern: -YYYY-MM-DD-HH-MM-SS-AM/PM at the end of basename
+    timestamp_pattern = r'-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-(AM|PM)$'
+    if re.search(timestamp_pattern, basename):
+        return str(path)  # Already has timestamp
+
+    # Generate timestamp in jupyter-scheduler format
+    now = datetime.now()
+    timestamp = now.strftime('%Y-%m-%d-%I-%M-%S-%p')
+
+    # Construct new path with timestamp
+    new_basename = f"{basename}-{timestamp}"
+    return str(path.parent / f"{new_basename}{ext}")
 
 
 def main():
@@ -71,7 +79,18 @@ def main():
     # S3 configuration (optional)
     s3_input_prefix = os.environ.get('S3_INPUT_PREFIX')
     s3_output_prefix = os.environ.get('S3_OUTPUT_PREFIX')
-    
+
+    # Handle CronJob dynamic path
+    if s3_output_prefix == 'CRONJOB_DYNAMIC':
+        s3_bucket = os.environ.get('S3_BUCKET')
+        job_name = get_job_name_from_k8s()
+        if job_name and s3_bucket:
+            s3_output_prefix = f"s3://{s3_bucket}/jobs/{job_name}/"
+            logger.info(f"CronJob mode: using dynamic S3 path {s3_output_prefix}")
+        else:
+            logger.warning("CronJob mode but couldn't determine job name")
+            s3_output_prefix = None
+
     # Standard configuration
     notebook_path = os.environ.get('NOTEBOOK_PATH')
     output_path = os.environ.get('OUTPUT_PATH')
@@ -80,17 +99,26 @@ def main():
     timeout = int(os.environ.get('TIMEOUT', '600'))
     package_input_folder = os.environ.get('PACKAGE_INPUT_FOLDER', 'false').lower() == 'true'
     output_formats_json = os.environ.get('OUTPUT_FORMATS', '[]')
-    
+
+    # Add timestamp to output path if needed (for CronJob jobs)
+    if output_path:
+        output_path = add_timestamp_to_path(output_path)
+        logger.info(f"Using output path: {output_path}")
+
+    # Initialize output directory
+    local_output_dir = None
+
     # If S3 is configured, download inputs first
     if s3_input_prefix:
         logger.info("S3 mode: downloading inputs from S3")
+        logger.info(f"Package input folder mode: {package_input_folder}")
         local_input_dir = '/tmp/inputs'
         download_from_s3(s3_input_prefix, local_input_dir)
-        
+
         # Update paths to use downloaded files
         notebook_name = Path(notebook_path).name
         notebook_path = str(Path(local_input_dir) / notebook_name)
-        
+
         # Update output path to local temp directory
         output_name = Path(output_path).name
         local_output_dir = '/tmp/outputs'
@@ -140,12 +168,35 @@ def main():
         logger.info(f"Parameters: {parameters}")
         inject_parameters(nb, parameters)
     
+    # Track files before execution for package_input_folder mode
+    original_files = set()
+    if package_input_folder and s3_input_prefix:
+        # In S3 package mode, track original files to identify side effects
+        for root, dirs, files in os.walk(execution_dir):
+            for file in files:
+                original_files.add(os.path.relpath(os.path.join(root, file), execution_dir))
+        logger.info(f"Tracked {len(original_files)} original files before execution")
+
     execute_notebook(nb, execution_dir, kernel_name, timeout)
     save_notebook(nb, output_path)
-    
+
     generate_output_formats(nb, output_path, output_formats)
-    
-    # If S3 is configured, upload outputs
+
+    # Copy original notebook to output directory for S3 upload
+    if s3_input_prefix and local_output_dir and notebook_path:
+        original_notebook_name = Path(notebook_path).name
+        original_notebook_dest = Path(local_output_dir) / original_notebook_name
+        if Path(notebook_path).exists() and not original_notebook_dest.exists():
+            shutil.copy2(notebook_path, original_notebook_dest)
+            logger.info(f"Copied original notebook: {original_notebook_name}")
+
+    # Capture side-effect files in package_input_folder mode
+    if package_input_folder and s3_input_prefix and local_output_dir:
+        logger.info("Capturing side-effect files created during execution")
+        logger.info(f"Execution dir: {execution_dir}")
+        logger.info(f"Output dir: {local_output_dir}")
+        capture_side_effects(execution_dir, local_output_dir, original_files)
+
     if s3_output_prefix:
         logger.info("S3 mode: uploading outputs to S3")
         upload_to_s3(local_output_dir, s3_output_prefix)
@@ -247,6 +298,88 @@ def generate_output_formats(nb, output_path, requested_formats):
             
         except Exception as e:
             logger.warning(f"Failed to generate {output_format.upper()} output: {e}")
+
+
+def download_from_s3(s3_prefix, local_dir):
+    """Download files from S3 to local directory."""
+    logger.info(f"Downloading from {s3_prefix} to {local_dir}")
+    
+    # Create local directory if it doesn't exist
+    Path(local_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Use AWS CLI to sync from S3
+    cmd = ['aws', 's3', 'sync', s3_prefix, local_dir, '--quiet']
+    
+    # Add endpoint URL if specified (for S3-compatible storage like MinIO)
+    endpoint_url = os.environ.get('S3_ENDPOINT_URL')
+    if endpoint_url:
+        cmd.extend(['--endpoint-url', endpoint_url])
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"S3 download failed: {result.stderr}")
+        sys.exit(1)
+    
+    logger.info("S3 download completed")
+
+
+def capture_side_effects(execution_dir, output_dir, original_files):
+    """Capture side-effect files created during notebook execution.
+
+    Copies any new files created during execution from the execution
+    directory to the output directory, preserving directory structure.
+    """
+    new_files_count = 0
+
+    for root, dirs, files in os.walk(execution_dir):
+        for file in files:
+            file_path = os.path.join(root, file)
+            rel_path = os.path.relpath(file_path, execution_dir)
+
+            # Skip if this was an original file
+            if rel_path in original_files:
+                continue
+
+            # Skip if it's the notebook output (already in output_dir)
+            if file_path.startswith(output_dir):
+                continue
+
+            # This is a new side-effect file, copy it to output dir
+            dest_path = os.path.join(output_dir, rel_path)
+            dest_dir = os.path.dirname(dest_path)
+
+            # Create destination directory if needed
+            if dest_dir:
+                Path(dest_dir).mkdir(parents=True, exist_ok=True)
+
+            shutil.copy2(file_path, dest_path)
+            logger.info(f"Captured side-effect file: {rel_path}")
+            new_files_count += 1
+
+    if new_files_count > 0:
+        logger.info(f"Captured {new_files_count} side-effect files")
+    else:
+        logger.info("No side-effect files detected")
+
+
+def upload_to_s3(local_dir, s3_prefix):
+    """Upload files from local directory to S3."""
+    logger.info(f"Uploading from {local_dir} to {s3_prefix}")
+    
+    # Use AWS CLI to sync to S3
+    cmd = ['aws', 's3', 'sync', local_dir, s3_prefix, '--quiet']
+    
+    # Add endpoint URL if specified
+    endpoint_url = os.environ.get('S3_ENDPOINT_URL')
+    if endpoint_url:
+        cmd.extend(['--endpoint-url', endpoint_url])
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"S3 upload failed: {result.stderr}")
+        sys.exit(1)
+    
+    logger.info("S3 upload completed")
 
 if __name__ == "__main__":
     main()

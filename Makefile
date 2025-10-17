@@ -1,9 +1,33 @@
+# Default target when just running 'make'
+.DEFAULT_GOAL := help
+
 CLUSTER_NAME := jupyter-scheduler-k8s
 LOCAL_DEV_DIR := $(shell pwd)/local-dev
 KUBECONFIG := $(LOCAL_DEV_DIR)/kind/.kubeconfig
 IMAGE_NAME := jupyter-scheduler-k8s
 IMAGE_TAG := latest
 
+.PHONY: help
+help:
+	@echo "🚀 Jupyter Scheduler K8s - Development Commands"
+	@echo "==============================================="
+	@echo ""
+	@echo "Setup & Environment:"
+	@echo "  make setup         - Initialize Finch VM and Kind cluster"
+	@echo "  make dev-env       - Build image and load into cluster (full setup)"
+	@echo "  make status        - Check development environment status"
+	@echo ""
+	@echo "Image Management:"
+	@echo "  make build-image   - Build container image"
+	@echo "  make load-image    - Build and load image into Kind cluster"
+	@echo ""
+	@echo "Cleanup:"
+	@echo "  make clean-k8s     - Delete all K8s jobs/cronjobs/pods (keep cluster)"
+	@echo "  make clean         - Delete cluster and stop Finch VM"
+	@echo ""
+	@echo "Utilities:"
+	@echo "  make kubectl-kind  - Configure kubectl for Kind cluster"
+	@echo ""
 
 .PHONY: setup
 setup: setup-finch setup-kind
@@ -47,6 +71,21 @@ setup-kind:
 
 .PHONY: clean
 clean: clean-cluster clean-finch
+
+.PHONY: clean-k8s
+clean-k8s:
+	@echo "🧹 Cleaning up all jupyter-scheduler K8s resources..."
+	@echo "Deleting CronJobs (job definitions)..."
+	@kubectl delete cronjobs -l app.kubernetes.io/managed-by=jupyter-scheduler-k8s -n default --ignore-not-found=true
+	@echo "Deleting Jobs..."
+	@kubectl delete jobs -l app.kubernetes.io/managed-by=jupyter-scheduler-k8s -n default --ignore-not-found=true
+	@echo "Deleting orphaned Pods..."
+	@kubectl delete pods -l app.kubernetes.io/managed-by=jupyter-scheduler-k8s -n default --ignore-not-found=true
+	@printf "Deleting completed Pods: "
+	@kubectl delete pods --field-selector=status.phase==Succeeded -n default --ignore-not-found=true 2>&1 | grep -E "deleted|No resources found" || true
+	@printf "Deleting failed Pods: "
+	@kubectl delete pods --field-selector=status.phase==Failed -n default --ignore-not-found=true 2>&1 | grep -E "deleted|No resources found" || true
+	@echo "✅ K8s resources cleaned up"
 
 .PHONY: clean-cluster
 clean-cluster:
@@ -130,6 +169,8 @@ load-image: build-image
 
 .PHONY: dev-env
 dev-env: load-image
+	@echo "Setting kubectl context for Kind cluster..."
+	@kind export kubeconfig --name $(CLUSTER_NAME)
 	@echo ""
 	@echo "🚀 Development environment ready!"
 	@echo ""
@@ -204,4 +245,21 @@ status:
 		fi; \
 	else \
 		echo "❌ AWS CLI not installed"; \
+	fi
+	@echo ""
+	@echo "AWS Credentials (for container access):"
+	@if [ -n "$$AWS_ACCESS_KEY_ID" ]; then \
+		echo "✅ AWS_ACCESS_KEY_ID set"; \
+	else \
+		echo "❌ AWS_ACCESS_KEY_ID not set (required for container S3 access)"; \
+	fi
+	@if [ -n "$$AWS_SECRET_ACCESS_KEY" ]; then \
+		echo "✅ AWS_SECRET_ACCESS_KEY set"; \
+	else \
+		echo "❌ AWS_SECRET_ACCESS_KEY not set (required for container S3 access)"; \
+	fi
+	@if [ -n "$$AWS_SESSION_TOKEN" ]; then \
+		echo "✅ AWS_SESSION_TOKEN set (temporary credentials)"; \
+	else \
+		echo "ℹ️  AWS_SESSION_TOKEN not set (not required for permanent credentials)"; \
 	fi
