@@ -17,6 +17,7 @@ Kubernetes backend for [jupyter-scheduler](https://github.com/jupyter-server/jup
 - **Native scheduling** - Uses K8s CronJobs with timezone support (no polling)
 - **S3 storage** - files survive cluster or server failures
 - **Jobs-as-records** - execution Jobs serve as both workload AND database
+- Environment variables setting for jobs from UI
 - Works with any Kubernetes cluster (Kind, minikube, EKS, GKE, AKS)
 
 ## Requirements
@@ -226,26 +227,3 @@ make load-image
 make status         # Check environment status
 make clean          # Remove cluster and cleanup
 ```
-
-
-## Implementation Status
-
-### Working Features ✅
-- **K8s Execution**: Notebooks run in isolated Kubernetes pods
-- **Resource Configuration**: CPU, memory, GPU allocation through UI
-- **Smart Scheduling Error Detection**:
-  - 30-second grace period prevents false positives during normal startup
-  - Clear messages for resource issues (GPU, memory, CPU unavailable)
-  - Configurable timeout for autoscaling clusters
-- **S3 Storage**: Files persist beyond cluster or server failures
-- **Jobs-as-Records**: Execution Jobs serve as database (no SQL needed)
-- **K8s-Native Scheduling**: CronJobs for scheduled job definitions (timezone support)
-- **Watch API Monitoring**: Real-time job status updates (no polling)
-- **Parameter Injection**: Dynamic notebook customization
-- **Multiple Output Formats**: HTML, PDF via nbconvert
-- **File Handling**: Any notebook size with S3 operations
-
-### Planned 🚧
-- **Job Management**: Stop/delete running jobs from UI
-- **Job Archival**: Automated cleanup of old execution Jobs
-- **PyPI Publishing**: Official package distribution
